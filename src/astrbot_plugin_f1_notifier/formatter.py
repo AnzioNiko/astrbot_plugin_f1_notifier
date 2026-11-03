@@ -218,11 +218,12 @@ def format_sprint_result(race: F1RaceWeekend) -> str:
 
 
 def format_driver_standings(
-    standings: list[JolpicaDriverStanding], limit: int = 10
+    standings: list[JolpicaDriverStanding], limit: int | None = None
 ) -> str:
     """Format driver championship standings."""
     lines = ["🏆 车手积分榜\n"]
-    for entry in standings[:limit]:
+    entries = standings if limit is None else standings[: max(0, limit)]
+    for entry in entries:
         pos = entry.pos_int
         lines.append(
             f"{_medal(pos)} {entry.driver.full_name} ({entry.primary_team})"

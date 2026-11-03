@@ -16,8 +16,13 @@ or ``Failure(error=...)``.  Callers use ``match`` / ``case`` to branch:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from datetime import datetime, timezone
+import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -58,9 +63,73 @@ OPENF1_BASE = "https://api.openf1.org/v1"
 _SESSION_LOCK: asyncio.Lock | None = None
 _SESSION_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 _CLIENT_SESSION: aiohttp.ClientSession | None = None
+_OPENF1_API_TOKEN: str = ""
 
-# In-memory cache: {cache_key: (expiry_timestamp, data)}
+# 内存缓存：{缓存键: (过期时间戳, 响应数据)}
 _API_CACHE: dict[str, tuple[float, Any]] = {}
+_API_CACHE_FILE: Path | None = None
+_FORCE_REFRESH_API_CACHE: ContextVar[bool] = ContextVar(
+    "f1_force_refresh_api_cache", default=False
+)
+
+
+def configure_persistent_cache(cache_file: str | Path) -> None:
+    """配置并加载 API 响应的本地持久缓存文件。"""
+    global _API_CACHE_FILE
+    _API_CACHE_FILE = Path(cache_file)
+    try:
+        _API_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not _API_CACHE_FILE.exists():
+            return
+        payload = json.loads(_API_CACHE_FILE.read_text(encoding="utf-8"))
+        entries = payload.get("entries", {}) if isinstance(payload, dict) else {}
+        now = time.time()
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            expiry = float(entry.get("expires_at", 0))
+            if expiry > now and "data" in entry:
+                _API_CACHE[key] = (expiry, entry["data"])
+    except (OSError, ValueError, TypeError, AttributeError):
+        # 缓存文件损坏或不可读时忽略它，后续请求仍可从网络重新建立缓存。
+        return
+
+
+def _persist_api_cache() -> None:
+    """以原有 TTL 持久化尚未过期的 JSON 响应。"""
+    if _API_CACHE_FILE is None:
+        return
+    now = time.time()
+    entries: dict[str, dict[str, Any]] = {}
+    for key, (expiry, data) in list(_API_CACHE.items()):
+        if expiry <= now:
+            _API_CACHE.pop(key, None)
+            continue
+        entries[key] = {"expires_at": expiry, "data": data}
+    temporary_file = _API_CACHE_FILE.with_name(_API_CACHE_FILE.name + ".tmp")
+    try:
+        _API_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary_file.write_text(
+            json.dumps({"version": 1, "entries": entries}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary_file.replace(_API_CACHE_FILE)
+    except (OSError, TypeError, ValueError):
+        # 本地存储失败不应影响 API 查询本身。
+        try:
+            temporary_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+@contextmanager
+def force_refresh_cache():
+    """强制跳过 API 缓存读取；成功取得的新响应仍会写入缓存。"""
+    token = _FORCE_REFRESH_API_CACHE.set(True)
+    try:
+        yield
+    finally:
+        _FORCE_REFRESH_API_CACHE.reset(token)
 
 
 def _get_cache_key(base: str, path: str, params: dict[str, Any] | None = None) -> str:
@@ -80,6 +149,12 @@ def _ensure_lock() -> asyncio.Lock:
         _SESSION_LOCK = asyncio.Lock()
         _SESSION_LOCK_LOOP = running_loop
     return _SESSION_LOCK
+
+
+def configure_openf1_api_token(token: str | None) -> None:
+    """保存 OpenF1 API Token，令牌只会附加到 OpenF1 请求。"""
+    global _OPENF1_API_TOKEN
+    _OPENF1_API_TOKEN = token.strip() if isinstance(token, str) else ""
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -111,7 +186,7 @@ async def close_session() -> None:
 async def _jolpica_get(path: str) -> dict[str, Any]:
     cache_key = _get_cache_key(JOLPICA_BASE, path)
     now = time.time()
-    if cache_key in _API_CACHE:
+    if not _FORCE_REFRESH_API_CACHE.get() and cache_key in _API_CACHE:
         expiry, value = _API_CACHE[cache_key]
         if now < expiry:
             return value
@@ -126,15 +201,23 @@ async def _jolpica_get(path: str) -> dict[str, Any]:
         data = await resp.json(content_type=None)
         # Cache Jolpica for 1 hour by default
         _API_CACHE[cache_key] = (now + 3600, data)
+        _persist_api_cache()
         return data
 
 
 async def _openf1_get(
-    path: str, params: dict[str, Any] | None = None
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> list[dict[str, Any]]:
     cache_key = _get_cache_key(OPENF1_BASE, path, params)
     now = time.time()
-    if cache_key in _API_CACHE:
+    if (
+        not bypass_cache
+        and not _FORCE_REFRESH_API_CACHE.get()
+        and cache_key in _API_CACHE
+    ):
         expiry, value = _API_CACHE[cache_key]
         if now < expiry:
             return value
@@ -155,13 +238,20 @@ async def _openf1_get(
 
     session = await _get_session()
     url = f"{OPENF1_BASE}{path}"
-    async with session.get(url, params=params) as resp:
+    headers = (
+        {"Authorization": f"Bearer {_OPENF1_API_TOKEN}"}
+        if _OPENF1_API_TOKEN
+        else None
+    )
+    async with session.get(url, params=params, headers=headers) as resp:
         if resp.status == 429:
             # Simple back-off on rate limit
             await asyncio.sleep(5)
         resp.raise_for_status()
         data = await resp.json(content_type=None)
-        _API_CACHE[cache_key] = (now + ttl, data)
+        if not bypass_cache:
+            _API_CACHE[cache_key] = (now + ttl, data)
+            _persist_api_cache()
         return data
 
 
@@ -173,7 +263,7 @@ async def _openf1_get(
 def _parse_iso_datetime(s: str) -> datetime | None:
     """Parse ISO 8601 string → timezone-aware UTC datetime, or None."""
     try:
-        return datetime.fromisoformat(s)
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -261,37 +351,89 @@ _OPENF1_CIRCUIT_MAP: dict[str, str] = {
 async def _get_openf1_round(
     session_name: str, round_number: int | str, year: int
 ) -> tuple[dict, int]:
-    """Return (session_dict, 0-based_round_index) for the matching session.
-
-    Finds all past sessions of *session_name* in *year*, sorts them by
-    date_start, and returns the one at *round_number* (1-based) or the
-    most recent when *round_number* == 'last'.
-
-    Raises ValueError when no suitable session is found.
-    """
+    """按 Jolpica 的赛程日期查找 OpenF1 场次，返回场次和零基轮次。"""
     sessions_raw = await _openf1_get(
         "/sessions", params={"session_name": session_name, "year": year}
     )
-    now = datetime.now(timezone.utc)
-    past = [
-        r
-        for r in sessions_raw
-        if (dt := _parse_iso_datetime(r.get("date_start", ""))) is not None
-        and dt <= now
-    ]
-    if not past:
-        raise ValueError(f"no past {session_name!r} sessions for {year}")
-    past.sort(
-        key=lambda r: _parse_iso_datetime(r.get("date_start", ""))
-        or datetime.min.replace(tzinfo=timezone.utc)
-    )
-    if round_number == "last":
-        return past[-1], len(past) - 1
-    idx = int(round_number) - 1
-    if 0 <= idx < len(past):
-        return past[idx], idx
-    raise ValueError(f"round {round_number} not found in {session_name!r} for {year}")
+    schedule_result = await get_current_schedule(year)
+    match schedule_result:
+        case Success(value=races):
+            pass
+        case Failure(error=err):
+            raise ValueError(f"无法取得 Jolpica 赛程以匹配 OpenF1 场次：{err}")
 
+    now = datetime.now(timezone.utc)
+    session_field = {
+        "Race": None,
+        "Qualifying": "qualifying",
+        "Sprint": "sprint",
+    }.get(session_name)
+    if session_name not in {"Race", "Qualifying", "Sprint"}:
+        raise ValueError(f"不支持的 OpenF1 场次类型：{session_name}")
+
+    def _scheduled_start(race: F1RaceWeekend) -> datetime | None:
+        if session_field is None:
+            date_part, time_part = race.date, race.time
+        else:
+            slot = getattr(race, session_field)
+            if slot is None:
+                return None
+            date_part, time_part = slot.date, slot.time
+        dt = _parse_iso_datetime(f"{date_part}T{time_part}")
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    scheduled: list[tuple[F1RaceWeekend, datetime]] = []
+    for race in races:
+        start = _scheduled_start(race)
+        if start is not None and start <= now:
+            scheduled.append((race, start))
+    if not scheduled:
+        raise ValueError(f"no past {session_name!r} sessions for {year}")
+
+    if round_number == "last":
+        target_race, expected_start = max(scheduled, key=lambda item: item[1])
+    else:
+        try:
+            target_round = int(round_number)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid round number: {round_number}") from exc
+        match_round = next(
+            ((race, start) for race, start in scheduled if race.round_int == target_round),
+            None,
+        )
+        if match_round is None:
+            raise ValueError(
+                f"round {round_number} has no past {session_name!r} session in {year}"
+            )
+        target_race, expected_start = match_round
+
+    # Jolpica 与 OpenF1 的赛历可能因取消或调整站次而数量不同，不能按列表下标对应。
+    candidates: list[tuple[timedelta, dict]] = []
+    for session in sessions_raw:
+        session_start = _parse_iso_datetime(session.get("date_start", ""))
+        if session_start is None:
+            continue
+        if session_start.tzinfo is None:
+            session_start = session_start.replace(tzinfo=timezone.utc)
+        session_start = session_start.astimezone(timezone.utc)
+        if session_start > now:
+            continue
+        distance = abs(session_start - expected_start)
+        if distance <= timedelta(hours=24):
+            candidates.append((distance, session))
+
+    if not candidates:
+        raise ValueError(
+            f"no OpenF1 {session_name!r} session matches round "
+            f"{target_race.round_int} near {expected_start.isoformat()}"
+        )
+
+    chosen = min(candidates, key=lambda item: item[0])[1]
+    return chosen, target_race.round_int - 1
 
 async def _qualifying_from_openf1(
     round_number: int | str, year: int
@@ -528,77 +670,50 @@ async def _sprint_from_openf1(
 
 
 async def get_current_schedule(season: int | str = "current") -> ScheduleResult:
-    """Return all race weekends for a season using OpenF1 meetings + sessions."""
+    """使用 Jolpica 返回赛程，避免轮询 OpenF1 赛程接口。"""
     try:
         year = datetime.now(timezone.utc).year if season == "current" else int(season)
-        meetings_raw, sessions_raw = await asyncio.gather(
-            _openf1_get("/meetings", params={"year": year}),
-            _openf1_get("/sessions", params={"year": year}),
-        )
-        if not meetings_raw:
+        raw = await _jolpica_get(f"/{year}/races.json?limit=100")
+        races: list[dict[str, Any]] = raw["MRData"]["RaceTable"]["Races"]
+        if not races:
             return Failure(error="empty schedule")
 
-        # Group sessions by meeting_key
-        sessions_by_meeting: dict[int, list[dict]] = {}
-        for s in sessions_raw:
-            mk = s.get("meeting_key")
-            if mk:
-                sessions_by_meeting.setdefault(mk, []).append(s)
-
-        _SESSION_FIELD_MAP = {
-            "Practice 1": "first_practice",
-            "Practice 2": "second_practice",
-            "Practice 3": "third_practice",
+        session_fields = {
+            "FirstPractice": "first_practice",
+            "SecondPractice": "second_practice",
+            "ThirdPractice": "third_practice",
             "Qualifying": "qualifying",
             "Sprint": "sprint",
-            "Sprint Qualifying": "sprint_qualifying",
-            "Sprint Shootout": "sprint_qualifying",
+            "SprintQualifying": "sprint_qualifying",
         }
-
         weekends: list[F1RaceWeekend] = []
-        sorted_meetings = sorted(
-            meetings_raw, key=lambda x: x.get("date_start", "")
-        )
-        # Filter out non-race meetings (e.g. Pre-Season Testing)
-        sorted_meetings = [
-            m for m in sorted_meetings
-            if "Grand Prix" in (m.get("meeting_name") or "")
-        ]
-        for idx, m in enumerate(sorted_meetings, start=1):
-            mk = m.get("meeting_key")
-            circuit_short = m.get("circuit_short_name") or ""
-
+        for idx, race in enumerate(races, start=1):
+            circuit = race.get("Circuit") or {}
+            location = circuit.get("Location") or {}
             kwargs: dict[str, Any] = {
-                "season": str(year),
-                "round": str(idx),
-                "race_name": m.get("meeting_name") or "",
-                "circuit_id": _OPENF1_CIRCUIT_MAP.get(circuit_short, ""),
-                "circuit_name": circuit_short,
-                "locality": m.get("location") or "",
-                "country": m.get("country_name") or "",
-                "country_code": m.get("country_code") or "",
-                "meeting_key": mk or 0,
+                "season": str(race.get("season") or year),
+                "round": str(race.get("round") or idx),
+                "race_name": race.get("raceName") or "",
+                "circuit_id": circuit.get("circuitId") or "",
+                "circuit_name": circuit.get("circuitName") or "",
+                "locality": location.get("locality") or "",
+                "country": location.get("country") or "",
+                "date": race.get("date") or "",
+                "time": race.get("time") or "",
             }
-
-            for s in sessions_by_meeting.get(mk, []):
-                sn = s.get("session_name", "")
-                date_part, time_part = _split_iso_dt(s.get("date_start") or "")
-                date_end_raw = s.get("date_end") or ""
-
-                field = _SESSION_FIELD_MAP.get(sn)
-                if field:
-                    kwargs[field] = F1SessionSlot(
-                        date=date_part, time=time_part, date_end=date_end_raw
+            for api_field, model_field in session_fields.items():
+                session = race.get(api_field)
+                if not isinstance(session, dict):
+                    continue
+                session_date = session.get("date") or ""
+                session_time = session.get("time") or ""
+                if session_date and session_time:
+                    kwargs[model_field] = F1SessionSlot(
+                        date=session_date,
+                        time=session_time,
                     )
-                elif sn == "Race":
-                    kwargs["date"] = date_part
-                    kwargs["time"] = time_part
-                    kwargs["race_date_end"] = date_end_raw
-
             weekends.append(F1RaceWeekend(**kwargs))
 
-        if not weekends:
-            return Failure(error="empty schedule")
         return Success(value=weekends)
     except (
         aiohttp.ClientError,
@@ -672,6 +787,27 @@ async def get_driver_standings(season: int | str = "current") -> StandingsResult
                     JolpicaDriverStanding.model_validate(e)
                     for e in first["DriverStandings"]
                 ]
+
+                # Jolpica 的积分榜没有头像字段。直接调用 OpenF1 的
+                # /drivers?session_key=latest 接口取得车手资料，并按姓名/缩写
+                # 进行匹配；头像补充失败时不影响积分榜本身返回。
+                try:
+                    headshots = await _get_driver_headshots()
+                    for entry in standings:
+                        driver = entry.driver
+                        for candidate in (
+                            driver.driver_id,
+                            driver.full_name,
+                            driver.family_name,
+                        ):
+                            url = headshots.get(_normalise_driver_text(candidate))
+                            if url:
+                                driver.headshot_url = url
+                                break
+                except Exception:
+                    # 头像只是增强信息，OpenF1 不可用时仍然显示完整榜单。
+                    pass
+
                 return Success(value=standings)
             case _:
                 return Failure(error="no standings data")
@@ -683,6 +819,44 @@ async def get_driver_standings(season: int | str = "current") -> StandingsResult
         asyncio.TimeoutError,
     ) as exc:
         return Failure(error=str(exc))
+
+
+def _normalise_driver_text(value: str | None) -> str:
+    """将车手姓名转换为可跨接口匹配的键。"""
+    if not value:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(
+        char for char in decomposed if not unicodedata.combining(char)
+    )
+    return "".join(char for char in without_marks.casefold() if char.isalnum())
+
+
+async def _get_driver_headshots() -> dict[str, str]:
+    """直接从 OpenF1 车手接口获取头像，并建立姓名匹配表。
+
+    使用 ``session_key=latest`` 直接请求车手资料，不再先查询最近一次
+    正赛，也不依赖正赛是否已经结束或是否存在正赛记录。
+    """
+    drivers_result = await get_drivers_for_session("latest")
+
+    match drivers_result:
+        case Success(value=drivers):
+            lookup: dict[str, str] = {}
+            for driver in drivers:
+                if not driver.headshot_url:
+                    continue
+                for candidate in (
+                    driver.name_acronym,
+                    driver.full_name,
+                    driver.last_name,
+                ):
+                    key = _normalise_driver_text(candidate)
+                    if key:
+                        lookup[key] = driver.headshot_url
+            return lookup
+        case Failure():
+            return {}
 
 
 async def get_constructor_standings(
@@ -768,12 +942,15 @@ FP_SESSION_NAMES = {
 
 
 async def get_practice_session(
-    fp_number: str = "1", year: int | None = None
+    fp_number: str = "1",
+    year: int | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> SessionResult:
-    """Return the most recently completed OpenF1 practice session.
+    """返回 OpenF1 中最近开始的对应练习赛场次。
 
-    fp_number: '1', '2', or '3' (also accepts 'fp1', 'fp2', 'fp3')
-    year: season year, defaults to current year
+    ``bypass_cache`` 用于调度器定期检查场次结束状态，
+    避免缓存导致无法看到更新后的 ``date_end``。
     """
     try:
         session_name = FP_SESSION_NAMES.get(fp_number.lower(), "Practice 1")
@@ -782,6 +959,7 @@ async def get_practice_session(
         results = await _openf1_get(
             "/sessions",
             params={"session_name": session_name, "year": year},
+            bypass_cache=bypass_cache,
         )
         now = datetime.now(timezone.utc)
         past = [
@@ -809,7 +987,6 @@ async def get_practice_session(
         asyncio.TimeoutError,
     ) as exc:
         return Failure(error=str(exc))
-
 
 async def get_drivers_for_session(session_key: int | str) -> DriversResult:
     """Return driver info for a given OpenF1 session key."""
@@ -897,3 +1074,11 @@ async def get_session_result(session_key: int | str) -> SessionResultsResult:
         asyncio.TimeoutError,
     ) as exc:
         return Failure(error=str(exc))
+
+
+
+
+
+
+
+

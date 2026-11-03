@@ -961,5 +961,316 @@ class TestSchedulerStateTracking(unittest.TestCase):
         self.assertEqual(state["notified_rounds"]["3"].count("weekend_start"), 1)
 
 
+class TestOpenF1RoundMapping(unittest.IsolatedAsyncioTestCase):
+    """验证不同赛历的轮次编号通过日期匹配，不再按列表位置错配。"""
+
+    @staticmethod
+    def _import_api():
+        import importlib.util
+        import sys
+        import types
+
+        package_name = "f1_round_mapping_test_package"
+        package_path = _API_SRC.parent
+        if package_name not in sys.modules:
+            package = types.ModuleType(package_name)
+            package.__path__ = [str(package_path)]
+            sys.modules[package_name] = package
+
+        models_name = f"{package_name}.models"
+        if models_name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                models_name, package_path / "models.py"
+            )
+            models = importlib.util.module_from_spec(spec)
+            sys.modules[models_name] = models
+            spec.loader.exec_module(models)
+
+        api_name = f"{package_name}.api"
+        if api_name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(api_name, _API_SRC)
+            api = importlib.util.module_from_spec(spec)
+            sys.modules[api_name] = api
+            spec.loader.exec_module(api)
+        return sys.modules[api_name], sys.modules[models_name]
+
+    async def test_round_15_matches_date_despite_extra_openf1_sessions(self):
+        from unittest.mock import AsyncMock
+
+        api, models = self._import_api()
+        race = models.F1RaceWeekend(
+            season="2020",
+            round="15",
+            race_name="Turkish Grand Prix",
+            date="2020-11-15",
+            time="11:10:00Z",
+        )
+        api.get_current_schedule = AsyncMock(
+            return_value=models.Success(value=[race])
+        )
+        api._openf1_get = AsyncMock(
+            return_value=[
+                {"session_key": 1001, "date_start": "2020-04-12T13:00:00+02:00"},
+                {"session_key": 1002, "date_start": "2020-04-19T13:00:00+02:00"},
+                {"session_key": 1013, "date_start": "2020-11-01T13:00:00+01:00"},
+                {"session_key": 1014, "date_start": "2020-11-08T13:00:00+01:00"},
+                {"session_key": 1015, "date_start": "2020-11-15T14:10:00+03:00"},
+            ]
+        )
+
+        chosen, zero_based_round = await api._get_openf1_round(
+            "Race", 15, 2020
+        )
+
+        self.assertEqual(chosen["session_key"], 1015)
+        self.assertEqual(zero_based_round, 14)
+
+    async def test_iso_parser_accepts_utc_z_suffix(self):
+        api, _ = self._import_api()
+        parsed = api._parse_iso_datetime("2020-11-15T11:10:00Z")
+        self.assertEqual(
+            parsed,
+            datetime(2020, 11, 15, 11, 10, tzinfo=timezone.utc),
+        )
+
+
+class TestPersistentPluginCaches(unittest.TestCase):
+    """验证 API 响应与头像原图能够写入并从本地缓存恢复。"""
+
+    @staticmethod
+    def _import_modules():
+        import importlib.util
+        import sys
+        import types
+
+        package_name = "f1_round_mapping_test_package"
+        package_path = _API_SRC.parent
+        package = sys.modules.get(package_name)
+        if package is None:
+            package = types.ModuleType(package_name)
+            package.__path__ = [str(package_path)]
+            sys.modules[package_name] = package
+
+        models_name = f"{package_name}.models"
+        if models_name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                models_name, package_path / "models.py"
+            )
+            models = importlib.util.module_from_spec(spec)
+            sys.modules[models_name] = models
+            spec.loader.exec_module(models)
+
+        api_name = f"{package_name}.api"
+        if api_name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(api_name, _API_SRC)
+            api = importlib.util.module_from_spec(spec)
+            sys.modules[api_name] = api
+            spec.loader.exec_module(api)
+
+        renderer_name = f"{package_name}.image_renderer"
+        if renderer_name not in sys.modules:
+            renderer_path = _API_SRC.parent / "image_renderer.py"
+            spec = importlib.util.spec_from_file_location(renderer_name, renderer_path)
+            renderer = importlib.util.module_from_spec(spec)
+            sys.modules[renderer_name] = renderer
+            spec.loader.exec_module(renderer)
+
+        return (
+            sys.modules[api_name],
+            sys.modules[renderer_name],
+        )
+
+    def test_api_response_cache_survives_restart_reload(self):
+        import tempfile
+        from datetime import datetime, timezone
+
+        api, _ = self._import_modules()
+        old_cache = api._API_CACHE.copy()
+        old_cache_file = api._API_CACHE_FILE
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                cache_file = Path(directory) / "api_responses.json"
+                api._API_CACHE.clear()
+                api.configure_persistent_cache(cache_file)
+                key = "https://example.invalid/session_result?session_key=15"
+                response = {"result": [{"position": 1, "points": 25}]}
+                expires = datetime.now(timezone.utc).timestamp() + 600
+                api._API_CACHE[key] = (expires, response)
+                api._persist_api_cache()
+
+                api._API_CACHE.clear()
+                api.configure_persistent_cache(cache_file)
+                self.assertEqual(api._API_CACHE[key], (expires, response))
+        finally:
+            api._API_CACHE.clear()
+            api._API_CACHE.update(old_cache)
+            api._API_CACHE_FILE = old_cache_file
+
+    def test_headshot_original_is_saved_and_reloaded_from_disk(self):
+        import io
+        import tempfile
+        from PIL import Image
+
+        _, renderer = self._import_modules()
+        old_dir = renderer._HEADSHOT_CACHE_DIR
+        old_cache = renderer._HEADSHOTS_CACHE.copy()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                renderer.configure({"headshot_cache_max": 30}, cache_dir=directory)
+                source = Image.new("RGB", (64, 64), (225, 6, 0))
+                buffer = io.BytesIO()
+                source.save(buffer, format="PNG")
+                url = "https://images.example.invalid/driver.png"
+                renderer._persist_headshot(url, buffer.getvalue())
+
+                path = renderer._headshot_cache_path(url)
+                restored = renderer._read_persisted_headshot(url, 32)
+                self.assertIsNotNone(path)
+                self.assertTrue(path.is_file())
+                self.assertIsNotNone(restored)
+                self.assertEqual(restored.size, (32, 32))
+        finally:
+            renderer._HEADSHOT_CACHE_DIR = old_dir
+            renderer._HEADSHOTS_CACHE.clear()
+            renderer._HEADSHOTS_CACHE.update(old_cache)
+
+
+    def test_headshot_download_reads_all_response_chunks(self):
+        import asyncio
+        import io
+        from unittest.mock import patch
+        from PIL import Image
+
+        _, renderer = self._import_modules()
+        buffer = io.BytesIO()
+        Image.new("RGB", (48, 48), (225, 6, 0)).save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        chunks = [image_bytes[:16], image_bytes[16:73], image_bytes[73:]]
+
+        class FakeContent:
+            def __init__(self):
+                self.remaining = list(chunks)
+
+            async def read(self, size=-1):
+                # 模拟网络分块到达：单次 read 只返回当前已到达的数据。
+                return self.remaining.pop(0) if self.remaining else b""
+
+            async def iter_chunked(self, size):
+                for chunk in chunks:
+                    yield chunk
+
+        class FakeResponse:
+            content_length = len(image_bytes)
+
+            def __init__(self):
+                self.content = FakeContent()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        old_cache = renderer._HEADSHOTS_CACHE.copy()
+        old_cache_dir = renderer._HEADSHOT_CACHE_DIR
+        renderer._HEADSHOTS_CACHE.clear()
+        renderer._HEADSHOT_CACHE_DIR = None
+        try:
+            with patch.object(
+                renderer.aiohttp,
+                "ClientSession",
+                side_effect=lambda **kwargs: FakeSession(),
+            ):
+                avatar = asyncio.run(
+                    renderer._load_headshot(
+                        "https://images.example.invalid/chunked.png", size=64
+                    )
+                )
+            self.assertIsNotNone(avatar)
+            self.assertEqual(avatar.size, (64, 64))
+        finally:
+            renderer._HEADSHOTS_CACHE.clear()
+            renderer._HEADSHOTS_CACHE.update(old_cache)
+            renderer._HEADSHOT_CACHE_DIR = old_cache_dir
+
+
+    def test_image_size_settings_update_width_and_vertical_layout(self):
+        _, renderer = self._import_modules()
+        old_values = (
+            renderer._renderer_config,
+            renderer._HEADSHOT_CACHE_DIR,
+            renderer.CARD_W,
+            renderer.FONT_SCALE,
+            renderer.LAYOUT_SCALE,
+            renderer.HEADER_H,
+            renderer.ROW_H,
+            renderer.FOOTER_H,
+            renderer.ROW_MARGIN_X,
+            renderer.ROW_MARGIN_Y,
+        )
+        try:
+            renderer.configure({"image_card_width": 1120, "image_font_scale_percent": 125})
+            self.assertEqual(renderer.CARD_W, 1120)
+            self.assertEqual(renderer.FONT_SCALE, 1.25)
+
+            base_row_height = renderer.ROW_H
+            renderer.configure({"image_card_width": 1000, "image_font_scale_percent": 140})
+            self.assertEqual(renderer.CARD_W, 1000)
+            self.assertEqual(renderer.FONT_SCALE, 1.4)
+            self.assertGreater(renderer.ROW_H, base_row_height)
+            self.assertGreater(renderer.HEADER_H, 0)
+        finally:
+            (
+                renderer._renderer_config,
+                renderer._HEADSHOT_CACHE_DIR,
+                renderer.CARD_W,
+                renderer.FONT_SCALE,
+                renderer.LAYOUT_SCALE,
+                renderer.HEADER_H,
+                renderer.ROW_H,
+                renderer.FOOTER_H,
+                renderer.ROW_MARGIN_X,
+                renderer.ROW_MARGIN_Y,
+            ) = old_values
+
+
+class TestChineseF1Commands(unittest.TestCase):
+    """验证中文命令和英文兼容别名已注册。"""
+
+    def test_queries_use_chinese_names_and_keep_english_aliases(self):
+        source = _MAIN_SRC.read_text(encoding="utf-8")
+        for entry in (
+            '@f1.command("正赛成绩", alias={"result"})',
+            '@f1.command("赛程", alias={"schedule"})',
+            '@f1.command("积分榜", alias={"standings"})',
+            '@f1.command("练习成绩", alias={"practice", "练习赛", "练习赛成绩"})',
+            '@f1.command("订阅", alias={"subscribe"})',
+        ):
+            self.assertIn(entry, source)
+
+    def test_refresh_suffix_is_recognized(self):
+        source = _MAIN_SRC.read_text(encoding="utf-8")
+        self.assertIn('markers = {"刷新", "强制刷新", "refresh", "force-refresh"}', source)
+        self.assertIn("force_refresh_cache()", source)
+        self.assertIn("force_refresh_headshots()", source)
+
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+

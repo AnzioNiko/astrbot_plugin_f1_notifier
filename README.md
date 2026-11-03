@@ -21,22 +21,23 @@
 
 ### 指令查询
 
-所有指令以 `/f1` 开头：
+/f1 帮助（/f1 help）— 显示帮助信息。  
+/f1 赛程 [刷新]（/f1 schedule [refresh]）— 近期赛程（最近 5 站）。  
+/f1 下一站 [刷新]（/f1 next [refresh]）— 下一站完整时间表。  
+/f1 正赛成绩 [站次] [刷新]（/f1 result [round] [refresh]）— 正赛成绩，默认最近一站。  
+/f1 排位成绩 [站次] [刷新]（/f1 qualifying [round] [refresh]）— 排位赛成绩。  
+/f1 冲刺成绩 [站次] [刷新]（/f1 sprint [round] [refresh]）— 冲刺赛成绩。  
+/f1 练习成绩 [1|2|3] [刷新]（/f1 practice [1|2|3] [refresh]）— 练习赛最快圈速，默认 FP1。  
+/f1 积分榜 [车手|车队] [数量] [刷新]（/f1 standings [drivers|teams] [limit] [refresh]）— 默认显示全部车手。  
+/f1 订阅（/f1 subscribe）— 订阅当前会话的自动推送。  
+/f1 取消订阅（/f1 unsubscribe）— 取消当前会话的自动推送。  
+/f1 测试 [赛季] [刷新]（/f1 test [season] [refresh]）— 测试插件查询功能。
 
-| 指令 | 说明 |
-|---|---|
-| `/f1 help` | 显示帮助信息 |
-| `/f1 schedule` | 近期赛程（最近 5 站） |
-| `/f1 next` | 下一站完整时间表 |
-| `/f1 result [round]` | 正赛结果（默认最近一场，可指定站次） |
-| `/f1 qualifying [round]` | 排位赛结果（默认最近一场，可指定站次） |
-| `/f1 sprint [round]` | 冲刺赛结果（默认最近一场，可指定站次） |
-| `/f1 practice [1\|2\|3]` | 练习赛最快圈速（默认 FP1） |
-| `/f1 standings drivers` | 车手积分榜 |
-| `/f1 standings teams` | 车队积分榜 |
-| `/f1 subscribe` | 订阅当前会话的自动推送 |
-| `/f1 unsubscribe` | 取消当前会话的自动推送 |
-| `/f1 test [season]` | 测试插件各项查询功能（默认 2025 赛季） |
+插件设置新增“图片卡片宽度（像素）”和“图片文字字号比例（%）”两项。默认输出宽度为 1120 像素、字号比例为 125%；可在设置界面继续调整，保存后重新加载插件生效。图片清晰度倍率保持不变。
+
+在查询指令末尾添加“刷新”，会跳过现有缓存，尝试重新获取赛程或成绩、重新下载头像并生成图片。若头像下载失败，会使用本地已有头像作为备用。
+
+API 响应与车手头像保存在 AstrBot 插件数据目录的 `cache` 子目录中，重启后仍可复用；API 缓存仍遵循各接口原有的有效期。
 
 ---
 
@@ -54,9 +55,9 @@ git clone https://github.com/MareDevi/astrbot_plugin_f1_notifier
 
 ## 使用方法
 
-1. 安装并启用插件后，在任意支持的会话中发送 `/f1 subscribe` 即可订阅自动推送。
-2. 发送 `/f1 help` 查看完整指令列表。
-3. 发送 `/f1 unsubscribe` 可随时取消订阅。
+1. 安装并启用插件后，在任意支持的会话中发送 `/f1 订阅` 即可订阅自动推送。
+2. 发送 `/f1 帮助` 查看完整指令列表。
+3. 发送 `/f1 取消订阅` 可随时取消订阅。
 
 订阅信息与推送状态会通过 AstrBot KV 存储持久化，重启后自动恢复。
 
@@ -79,3 +80,6 @@ git clone https://github.com/MareDevi/astrbot_plugin_f1_notifier
 ## 许可证
 
 [AGPL-3.0](LICENSE)
+
+
+

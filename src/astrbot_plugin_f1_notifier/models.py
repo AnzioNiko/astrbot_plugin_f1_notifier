@@ -116,7 +116,7 @@ class F1SprintResult(BaseModel):
 
 
 class F1RaceWeekend(BaseModel):
-    """Full race-weekend entry built from OpenF1 meetings + sessions data."""
+    """综合赛历与赛果数据构建的完整比赛周条目。"""
 
     model_config = _CFG
 
@@ -168,6 +168,8 @@ class JolpicaDriver(BaseModel):
     given_name: str = Field("", alias="givenName")
     family_name: str = Field("", alias="familyName")
     nationality: str = ""
+    # Jolpica 本身不提供头像；由 API 层尽力用 OpenF1 资料补充。
+    headshot_url: str | None = None
 
     @property
     def full_name(self) -> str:
@@ -310,3 +312,4 @@ if TYPE_CHECKING:
     DriversResult: TypeAlias = Success[list[OpenF1Driver]] | Failure
     GridResult: TypeAlias = Success[list[OpenF1Position]] | Failure
     MeetingResult: TypeAlias = Success[OpenF1Meeting] | Failure
+

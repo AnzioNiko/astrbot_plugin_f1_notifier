@@ -5,6 +5,34 @@
     "hint": "开启后，所有查询命令与推送通知将以仿F1官方风格的图片形式输出，而非纯文本。需要 Pillow + CairoSVG 渲染环境支持。",
     "default": false
   },
+  "image_card_width": {
+    "description": "图片卡片宽度（像素）",
+    "type": "int",
+    "slider": {
+      "min": 1000,
+      "max": 1600,
+      "step": 20
+    },
+    "hint": "设置生成图片的宽度。默认 1120 像素；较窄时长车手名可能以省略号显示。保存后重新加载插件生效。",
+    "default": 1120
+  },
+  "image_font_scale_percent": {
+    "description": "图片文字字号比例（%）",
+    "type": "int",
+    "slider": {
+      "min": 100,
+      "max": 140,
+      "step": 5
+    },
+    "hint": "统一调节图片中的文字字号。默认 125%；行高和卡片高度会随之调整。保存后重新加载插件生效。",
+    "default": 125
+  },
+  "openf1_api_token": {
+    "description": "OpenF1 API Token",
+    "type": "string",
+    "hint": "可选。填写 OpenF1 账户申请的 API Token，用于访问当前赛季和实时数据。留空则不发送认证信息。",
+    "default": ""
+  },
   "result_poll_delay": {
     "description": "比赛结果轮询延迟（分钟）",
     "type": "int",
@@ -24,9 +52,9 @@
     "default": 50
   },
   "headshot_cache_max": {
-    "description": "最大车手头像缓存数量",
+    "description": "最大本地车手头像缓存数量",
     "type": "int",
-    "hint": "内存中最多缓存的车手头像（从网络下载）数量。超出后将清除最早缓存的头像。默认 30 张。",
+    "hint": "磁盘与内存中最多保留的车手头像数量。重启后可复用本地头像；超出后清理最久未使用项。默认 30 张。",
     "default": 30
   }
 }

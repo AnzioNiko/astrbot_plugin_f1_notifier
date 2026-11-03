@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from astrbot.core.star.context import Context
 
 POLL_INTERVAL = 60  # seconds
+PRACTICE_START_GRACE = timedelta(hours=1)
+PRACTICE_STATUS_POLL_INTERVAL = timedelta(minutes=5)
 MIN_ERROR_SLEEP = 10  # minimum sleep after an error (anti-avalanche)
 BROADCAST_CONCURRENCY = 5  # max concurrent sends in _broadcast
 WEEKEND_START_THRESHOLD = timedelta(hours=24)  # notify 24 h before first session
@@ -41,6 +43,9 @@ PRE_RACE_THRESHOLD = timedelta(minutes=30)  # notify 30 min before race
 
 
 MAX_TRACKED_ROUNDS = 5  # keep at most this many rounds in state to bound growth
+OPENF1_ROUND_MAPPING_VERSION = 1
+OPENF1_RESULT_EVENTS = {"race_result", "qualifying_result", "sprint_result"}
+FIRST_AFFECTED_JOLPICA_ROUND = 4
 
 
 def _default_state() -> dict:
@@ -61,6 +66,8 @@ class F1Scheduler:
         self._state: dict = _default_state()
         self._task: asyncio.Task | None = None
         self._loaded = False
+        self._practice_next_poll_at: dict[tuple[int, str], datetime] = {}
+        self._practice_sessions_ended: dict[tuple[int, str], OpenF1Session] = {}
         # Propagate config to image renderer (controls cache limits, etc.)
         img.configure(config)
 
@@ -132,6 +139,27 @@ class F1Scheduler:
                 rounds[str(old_round)] = list(old_events)
             self._state["notified_rounds"] = rounds
             await self._persist_state()
+
+        # 旧版本按 OpenF1 场次列表下标映射轮次，导致受影响轮次的赛果可能被错标为已发送。
+        mapping_version = int(self._state.get("openf1_round_mapping_version", 0) or 0)
+        if mapping_version < OPENF1_ROUND_MAPPING_VERSION:
+            rounds = self._state.setdefault("notified_rounds", {})
+            for round_key, events in rounds.items():
+                try:
+                    affected = int(round_key) >= FIRST_AFFECTED_JOLPICA_ROUND
+                except (TypeError, ValueError):
+                    continue
+                if affected and isinstance(events, list):
+                    rounds[round_key] = [
+                        event
+                        for event in events
+                        if event not in OPENF1_RESULT_EVENTS
+                    ]
+            self._state["openf1_round_mapping_version"] = (
+                OPENF1_ROUND_MAPPING_VERSION
+            )
+            await self._persist_state()
+
         self._loaded = True
         logger.info(
             f"[F1Notifier] Loaded {len(self._subscribers)} subscriber(s) from KV store."
@@ -321,87 +349,116 @@ class F1Scheduler:
     async def _check_practice_sessions(
         self, next_race: F1RaceWeekend, round_num: int, now: datetime
     ) -> None:
-        """Push practice session results as soon as each session has ended per OpenF1."""
+        """练习赛计划开始一小时后才查询状态。
+
+        每场练习赛最多每五分钟查询一次 OpenF1。
+        只有场次结束时间（再加上配置的结果等待时间）已过，
+        才获取圈速结果和车手资料。
+        """
         fp_sessions = [
             (next_race.first_practice, "1", "fp1_result"),
             (next_race.second_practice, "2", "fp2_result"),
             (next_race.third_practice, "3", "fp3_result"),
         ]
         for fp_slot, fp_num, event_key in fp_sessions:
-            if fp_slot is None:
+            if fp_slot is None or self._notified(round_num, event_key):
                 continue
-            fp_time = self._parse_utc(fp_slot.date, fp_slot.time)
-            # Use actual session end time when available; fall back to start + 2 h
-            try:
-                fp_end = (
-                    datetime.fromisoformat(fp_slot.date_end)
-                    if fp_slot.date_end
-                    else fp_time + timedelta(hours=2)
-                )
-            except ValueError:
-                fp_end = fp_time + timedelta(hours=2)
-            if now > fp_end + self._result_poll_delay:
-                if not self._notified(round_num, event_key):
-                    session_res = await api.get_practice_session(fp_num)
-                    match session_res:
-                        case Success(value=of1_session):
-                            # Validate session belongs to current race weekend
-                            # by checking date_start is within 24 h of the
-                            # expected practice time (robust against country
-                            # name mismatches across APIs).
-                            if not self._session_matches_slot(of1_session, fp_time):
-                                logger.debug(
-                                    f"[F1Notifier] FP{fp_num} session "
-                                    f"date_start='{of1_session.date_start}' "
-                                    f"is not within 24 h of expected slot, "
-                                    f"skipping"
-                                )
-                                continue
-                            sk = of1_session.session_key
-                            results_res, drivers_res = await asyncio.gather(
-                                api.get_session_result(sk),
-                                api.get_drivers_for_session(sk),
-                            )
-                            match (results_res, drivers_res):
-                                case (
-                                    Success(value=results),
-                                    Success(value=drivers_list),
-                                ) if results:
-                                    drivers_by_num = {
-                                        d.driver_number: d for d in drivers_list
-                                    }
-                                    msg = fmt.format_practice_result(
-                                        of1_session, results, drivers_by_num, fp_num
-                                    )
-                                    image_path = await img.render_practice_result(
-                                        of1_session,
-                                        results,
-                                        drivers_by_num,
-                                        fp_num,
-                                        circuit_id=next_race.circuit_id,
-                                    )
-                                    await self._broadcast(msg, image_path)
-                                    await self._mark_notified(round_num, event_key)
-                                    logger.info(
-                                        f"[F1Notifier] Sent {event_key} for round {round_num}"
-                                    )
-                                case (Failure(error=err), _):
-                                    logger.warning(
-                                        f"[F1Notifier] Failed to fetch FP{fp_num} results: {err}"
-                                    )
-                                case (_, Failure(error=err)):
-                                    logger.warning(
-                                        f"[F1Notifier] Failed to fetch FP{fp_num} drivers: {err}"
-                                    )
-                                case _:
-                                    logger.debug(
-                                        f"[F1Notifier] FP{fp_num} results not ready yet"
-                                    )
-                        case Failure(error=err):
-                            logger.warning(
-                                f"[F1Notifier] FP{fp_num} session not found: {err}"
-                            )
 
+            fp_time = self._parse_utc(fp_slot.date, fp_slot.time)
+            if now < fp_time + PRACTICE_START_GRACE:
+                continue
+
+            poll_key = (round_num, event_key)
+            next_poll = self._practice_next_poll_at.get(poll_key)
+            if next_poll is not None and now < next_poll:
+                continue
+            self._practice_next_poll_at[poll_key] = (
+                now + PRACTICE_STATUS_POLL_INTERVAL
+            )
+
+            session = self._practice_sessions_ended.get(poll_key)
+            if session is None:
+                season = int(next_race.season) if next_race.season.isdigit() else None
+                session_res = await api.get_practice_session(
+                    fp_num, year=season, bypass_cache=True
+                )
+                match session_res:
+                    case Success(value=of1_session):
+                        if not self._session_matches_slot(of1_session, fp_time):
+                            logger.debug(
+                                f"[F1Notifier] FP{fp_num} session "
+                                f"date_start='{of1_session.date_start}' "
+                                f"暂未匹配到本场预期练习赛时间"
+                            )
+                            continue
+                        session = of1_session
+                    case Failure(error=err):
+                        logger.warning(
+                            f"[F1Notifier] FP{fp_num} session status unavailable; "
+                            f"将在 {PRACTICE_STATUS_POLL_INTERVAL} 后重试：{err}"
+                        )
+                        continue
+
+                try:
+                    session_end = datetime.fromisoformat(
+                        session.date_end.replace("Z", "+00:00")
+                    ) if session.date_end else fp_time + PRACTICE_START_GRACE
+                    if session_end.tzinfo is None:
+                        session_end = session_end.replace(tzinfo=timezone.utc)
+                    session_end = session_end.astimezone(timezone.utc)
+                except (ValueError, AttributeError):
+                    session_end = fp_time + PRACTICE_START_GRACE
+
+                if now < session_end:
+                    logger.debug(
+                        f"[F1Notifier] FP{fp_num} has not ended yet; "
+                        f"将在 {PRACTICE_STATUS_POLL_INTERVAL} 后再次检查"
+                    )
+                    continue
+                if now < session_end + self._result_poll_delay:
+                    continue
+
+                # 确认结束后，重试圈速结果时不再重复查询 /sessions。
+                self._practice_sessions_ended[poll_key] = session
+
+            sk = session.session_key
+            results_res, drivers_res = await asyncio.gather(
+                api.get_session_result(sk),
+                api.get_drivers_for_session(sk),
+            )
+            match (results_res, drivers_res):
+                case (Success(value=results), Success(value=drivers_list)) if results:
+                    drivers_by_num = {d.driver_number: d for d in drivers_list}
+                    msg = fmt.format_practice_result(
+                        session, results, drivers_by_num, fp_num
+                    )
+                    image_path = await img.render_practice_result(
+                        session,
+                        results,
+                        drivers_by_num,
+                        fp_num,
+                        circuit_id=next_race.circuit_id,
+                    )
+                    await self._broadcast(msg, image_path)
+                    await self._mark_notified(round_num, event_key)
+                    self._practice_next_poll_at.pop(poll_key, None)
+                    self._practice_sessions_ended.pop(poll_key, None)
+                    logger.info(
+                        f"[F1Notifier] Sent {event_key} for round {round_num}"
+                    )
+                case (Failure(error=err), _):
+                    logger.warning(
+                        f"[F1Notifier] Failed to fetch FP{fp_num} results: {err}"
+                    )
+                case (_, Failure(error=err)):
+                    logger.warning(
+                        f"[F1Notifier] Failed to fetch FP{fp_num} drivers: {err}"
+                    )
+                case _:
+                    logger.debug(
+                        f"[F1Notifier] FP{fp_num} results not ready yet; "
+                        f"将在 {PRACTICE_STATUS_POLL_INTERVAL} 后重试"
+                    )
     async def _check_qualifying(
         self, next_race: F1RaceWeekend, round_num: int, now: datetime
     ) -> None:
@@ -543,3 +600,6 @@ class F1Scheduler:
                             logger.debug(
                                 f"[F1Notifier] Sprint result not ready: {err}"
                             )
+
+
+
