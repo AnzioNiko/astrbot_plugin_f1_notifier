@@ -5,6 +5,28 @@
     "hint": "查询与通知使用图片卡片。关闭时不执行图片渲染；渲染或图片发送失败时回退纯文本。",
     "default": false
   },
+  "image_card_width": {
+    "description": "图片卡片宽度（像素）",
+    "type": "int",
+    "slider": {
+      "min": 1000,
+      "max": 1600,
+      "step": 20
+    },
+    "hint": "个人版默认 1120 像素。较窄时文字会更多换行，较宽时更适合长车手名和车队名。保存后重载插件生效。",
+    "default": 1120
+  },
+  "image_font_scale_percent": {
+    "description": "图片文字字号比例（%）",
+    "type": "int",
+    "slider": {
+      "min": 100,
+      "max": 140,
+      "step": 5
+    },
+    "hint": "个人版默认 125%。统一调整卡片文字，并同步调整行高和卡片高度。保存后重载插件生效。",
+    "default": 125
+  },
   "timezone": {
     "description": "显示与周末赛程推送时区",
     "type": "string",
@@ -41,5 +63,27 @@
     "type": "int",
     "hint": "最多保留的卡片文件数量，范围 1–200。",
     "default": 50
+  },
+  "standings_driver_limit": {
+    "description": "车手积分榜默认显示人数",
+    "type": "int",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "hint": "未在命令中指定数量时使用，范围 1–30。默认显示 20 名车手。",
+    "default": 20
+  },
+  "standings_team_limit": {
+    "description": "车队积分榜默认显示数量",
+    "type": "int",
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "未在命令中指定数量时使用，范围 1–20。默认显示 10 支车队。",
+    "default": 10
   }
 }

@@ -612,3 +612,40 @@ async def test_practice_preserves_gap_to_leader(client, monkeypatch, gap, expect
     assert table.rows[0][table.columns.index("差距")] == expected
     assert "圈数" in table.columns
     assert table.rows[0][table.columns.index("圈数")] == "24"
+
+
+async def test_standings_limit_truncates_driver_rows(client, monkeypatch):
+    payload = {
+        "MRData": {
+            "StandingsTable": {
+                "StandingsLists": [
+                    {
+                        "round": "1",
+                        "DriverStandings": [
+                            {
+                                "position": str(index),
+                                "positionText": str(index),
+                                "points": str(30 - index),
+                                "wins": "0",
+                                "Driver": {
+                                    "givenName": f"Driver{index}",
+                                    "familyName": "Test",
+                                },
+                                "Constructors": [{"name": "Test Team"}],
+                            }
+                            for index in range(1, 4)
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+    async def response(base, path, params=None, ttl=30):
+        return payload
+
+    monkeypatch.setattr(client, "_get", response)
+    table = await client.standings(2026, "drivers", 2)
+    assert table is not None
+    assert len(table.rows) == 2
+    assert table.rows[0][1] == "Driver1 Test"

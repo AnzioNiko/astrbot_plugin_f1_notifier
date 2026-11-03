@@ -513,12 +513,15 @@ class F1Client:
             race.circuit_id,
         )
 
-    async def standings(self, season: int, category: str) -> Table | None:
+    async def standings(
+        self, season: int, category: str, limit: int | None = None
+    ) -> Table | None:
         """Fetch championship standings without silently selecting another year.
 
         Args:
             season: Championship year.
             category: drivers or teams.
+            limit: Optional maximum number of rows to display.
 
         Returns:
             Standings table, or None before the first published standings.
@@ -553,6 +556,8 @@ class F1Client:
                     + detail
                     + (str(row["points"]), str(row["wins"]))
                 )
+            if limit is not None:
+                output = output[:limit]
             columns = (
                 ("名次", "车队", "积分", "胜场")
                 if teams

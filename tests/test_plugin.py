@@ -282,6 +282,26 @@ async def test_subs_rejects_unknown_action(plugin):
 async def test_initialize_uses_real_astrbot_api_and_restores_state(plugin):
     assert plugin.scheduler.subscriber_count == 0
     assert plugin.client._session is not None
+    assert plugin.renderer.card_width == 1120
+    assert plugin.renderer.font_scale_percent == 125
+
+
+def test_chinese_subcommand_aliases_are_registered(module):
+    from astrbot.core.star.filter.command import CommandFilter
+    from astrbot.core.star.star_handler import star_handlers_registry
+
+    handlers = star_handlers_registry.get_handlers_by_module_name(module.__name__)
+    command_names = {
+        name
+        for handler in handlers
+        for event_filter in handler.event_filters
+        if isinstance(event_filter, CommandFilter)
+        for name in event_filter.get_complete_command_names()
+    }
+
+    assert "f1 积分榜" in command_names
+    assert "f1 正赛成绩" in command_names
+    assert "f1 订阅" in command_names
 
 
 async def test_invalid_round_does_not_call_provider(plugin):
@@ -293,7 +313,48 @@ async def test_invalid_round_does_not_call_provider(plugin):
 
 async def test_invalid_standings_category_has_usage(plugin):
     replies = [r async for r in plugin.f1_standings(Event(), "wrong")]
-    assert "drivers" in replies[0] and "teams" in replies[0]
+    assert "drivers" in replies[0] and "车手" in replies[0]
+
+
+@pytest.mark.parametrize(
+    "category,expected_category,expected_limit",
+    [
+        ("drivers", "drivers", 20),
+        ("teams", "teams", 10),
+        ("车手", "drivers", 20),
+        ("车队", "teams", 10),
+    ],
+)
+async def test_standings_uses_configured_default_limit(
+    plugin, category, expected_category, expected_limit
+):
+    plugin.client.standings = AsyncMock(return_value=Table("积分榜"))
+    replies = [r async for r in plugin.f1_standings(Event(), category)]
+    assert replies[0] == "🏎 积分榜"
+    args = plugin.client.standings.await_args.args
+    assert args[1:] == (expected_category, expected_limit)
+
+
+async def test_standings_accepts_explicit_limit_for_teams(plugin):
+    plugin.client.standings = AsyncMock(return_value=Table("积分榜"))
+    replies = [r async for r in plugin.f1_standings(Event(), "车队", "5")]
+    assert replies[0] == "🏎 积分榜"
+    assert plugin.client.standings.await_args.args[1:] == ("teams", 5)
+
+
+async def test_standings_accepts_numeric_only_driver_limit(plugin):
+    plugin.client.standings = AsyncMock(return_value=Table("积分榜"))
+    replies = [r async for r in plugin.f1_standings(Event(), "5")]
+    assert replies[0] == "🏎 积分榜"
+    assert plugin.client.standings.await_args.args[1:] == ("drivers", 5)
+
+
+@pytest.mark.parametrize("limit", ["0", "21", "abc", "１"])
+async def test_standings_rejects_invalid_team_limit(plugin, limit):
+    plugin.client.standings = AsyncMock()
+    replies = [r async for r in plugin.f1_standings(Event(), "teams", limit)]
+    assert "1 到 20" in replies[0]
+    plugin.client.standings.assert_not_called()
 
 
 async def test_text_mode_does_not_invoke_renderer(plugin):
@@ -376,4 +437,20 @@ async def test_schedule_queries_next_year_during_offseason(plugin):
 )
 def test_invalid_weekend_reminder_settings_rejected(module, settings):
     with pytest.raises(ValueError, match="weekend_push_"):
+        module.F1NotifierPlugin(AsyncMock(), settings)
+
+
+@pytest.mark.parametrize(
+    "settings,key",
+    [
+        ({"image_card_width": 999}, "image_card_width"),
+        ({"image_card_width": 1601}, "image_card_width"),
+        ({"image_font_scale_percent": 99}, "image_font_scale_percent"),
+        ({"image_font_scale_percent": True}, "image_font_scale_percent"),
+        ({"standings_driver_limit": 0}, "standings_driver_limit"),
+        ({"standings_team_limit": 21}, "standings_team_limit"),
+    ],
+)
+def test_invalid_personal_settings_rejected(module, settings, key):
+    with pytest.raises(ValueError, match=key):
         module.F1NotifierPlugin(AsyncMock(), settings)

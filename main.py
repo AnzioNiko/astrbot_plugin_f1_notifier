@@ -21,19 +21,19 @@ from .src.astrbot_plugin_f1_notifier.models import Table
 from .src.astrbot_plugin_f1_notifier.scheduler import F1Scheduler
 
 HELP_TEXT = """F1 Notifier
-/f1 help — 帮助
-/f1 schedule — 未来 5 站赛程
-/f1 next — 下一站完整周末时间表
-/f1 result [round] — 正赛结果，默认最近一站
-/f1 qualifying [round] — 排位赛结果
-/f1 sprint [round] — 冲刺赛结果
-/f1 practice [1|2|3] — 最近一次指定练习赛结果
-/f1 standings [drivers|teams] — 车手 / 车队积分榜
-/f1 subscribe — 订阅当前会话
-/f1 unsubscribe — 取消当前会话订阅
-/f1 test [season] — 只读检查数据源，默认 2025
+/f1 help（帮助）— 显示帮助
+/f1 schedule（赛程）— 未来 5 站赛程
+/f1 next（下一站）— 下一站完整周末时间表
+/f1 result（正赛成绩）[round] — 正赛结果，默认最近一站
+/f1 qualifying（排位成绩）[round] — 排位赛结果
+/f1 sprint（冲刺成绩）[round] — 冲刺赛结果
+/f1 practice（练习成绩）[1|2|3] — 最近一次指定练习赛结果
+/f1 standings（积分榜）[drivers|teams|车手|车队] [数量] — 车手 / 车队积分榜
+/f1 subscribe（订阅）— 订阅当前会话
+/f1 unsubscribe（取消订阅）— 取消当前会话订阅
+/f1 test（测试）[season] — 只读检查数据源，默认 2025
 /f1 push <群UMO> <next|schedule|result|qualifying|sprint|practice|standings> [参数] — 管理员定向推送
-/f1 subs — 管理员：列出全部订阅会话
+/f1 subs（订阅列表）— 管理员：列出全部订阅会话
 /f1 subs add <会话UMO> — 管理员：添加订阅
 /f1 subs remove <会话UMO> — 管理员：取消订阅
 
@@ -92,9 +92,13 @@ class F1NotifierPlugin(Star):
         ):
             raise ValueError("weekend_push_time must use HH:MM between 00:00 and 23:59")
         for key, default, minimum, maximum in (
+            ("image_card_width", 1120, 1000, 1600),
+            ("image_font_scale_percent", 125, 100, 140),
             ("result_poll_delay", 5, 0, 120),
             ("image_cache_max_age", 30, 1, 1440),
             ("image_cache_max_count", 50, 1, 200),
+            ("standings_driver_limit", 20, 1, 30),
+            ("standings_team_limit", 10, 1, 20),
         ):
             value = self.config.get(key, default)
             if (
@@ -119,6 +123,8 @@ class F1NotifierPlugin(Star):
             StarTools.get_data_dir("astrbot_plugin_f1_notifier") / "images",
             max_age_minutes=self.config["image_cache_max_age"],
             max_count=self.config["image_cache_max_count"],
+            card_width=self.config["image_card_width"],
+            font_scale_percent=self.config["image_font_scale_percent"],
         )
         try:
             await self.client.open()
@@ -210,18 +216,48 @@ class F1NotifierPlugin(Star):
                 yield event.plain_result(text)
                 return
             if action == "standings":
-                category = {
-                    "driver": "drivers",
-                    "drivers": "drivers",
-                    "team": "teams",
-                    "teams": "teams",
-                }.get(argument.lower())
+                parts = argument.replace("，", " ").split()
+                first = parts[0].lower() if parts else "drivers"
+                if first.isascii() and first.isdecimal():
+                    category = "drivers"
+                    limit_text = first
+                    extra_parts = parts[1:]
+                else:
+                    category = {
+                        "driver": "drivers",
+                        "drivers": "drivers",
+                        "车手": "drivers",
+                        "team": "teams",
+                        "teams": "teams",
+                        "车队": "teams",
+                    }.get(first)
+                    limit_text = parts[1] if len(parts) == 2 else ""
+                    extra_parts = parts[2:]
                 if category is None:
                     yield event.plain_result(
-                        "用法：/f1 standings drivers 或 /f1 standings teams"
+                        "用法：/f1 standings [drivers|teams] [数量]，也可使用 /f1 积分榜 [车手|车队] [数量]"
                     )
                     return
-                table = await self.client.standings(now.year, category)
+                default_limit = self.config[
+                    "standings_driver_limit"
+                    if category == "drivers"
+                    else "standings_team_limit"
+                ]
+                maximum = 30 if category == "drivers" else 20
+                if extra_parts or (
+                    limit_text
+                    and (
+                        not limit_text.isascii()
+                        or not limit_text.isdecimal()
+                        or not 1 <= int(limit_text) <= maximum
+                    )
+                ):
+                    yield event.plain_result(
+                        f"积分榜数量必须是 1 到 {maximum} 的正整数。"
+                    )
+                    return
+                limit = int(limit_text) if limit_text else default_limit
+                table = await self.client.standings(now.year, category, limit)
             else:
                 kind = action
                 if action == "practice":
@@ -322,7 +358,7 @@ class F1NotifierPlugin(Star):
     def f1(self):
         """Query F1 information and manage this conversation's subscription."""
 
-    @f1.command("help")
+    @f1.command("help", alias={"帮助"})
     async def f1_help(self, event: AstrMessageEvent):
         """Show available commands.
 
@@ -334,7 +370,7 @@ class F1NotifierPlugin(Star):
         """
         yield event.plain_result(HELP_TEXT)
 
-    @f1.command("schedule")
+    @f1.command("schedule", alias={"赛程"})
     async def f1_schedule(self, event: AstrMessageEvent):
         """Show the next five races.
 
@@ -347,7 +383,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "schedule"):
             yield result
 
-    @f1.command("next")
+    @f1.command("next", alias={"下一站"})
     async def f1_next(self, event: AstrMessageEvent):
         """Show the next race weekend.
 
@@ -360,7 +396,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "next"):
             yield result
 
-    @f1.command("result")
+    @f1.command("result", alias={"正赛成绩"})
     async def f1_result(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show race classification.
 
@@ -374,7 +410,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "race", round_num):
             yield result
 
-    @f1.command("qualifying")
+    @f1.command("qualifying", alias={"排位成绩"})
     async def f1_qualifying(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show qualifying classification.
 
@@ -388,7 +424,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "qualifying", round_num):
             yield result
 
-    @f1.command("sprint")
+    @f1.command("sprint", alias={"冲刺成绩"})
     async def f1_sprint(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show sprint classification.
 
@@ -402,7 +438,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "sprint", round_num):
             yield result
 
-    @f1.command("practice")
+    @f1.command("practice", alias={"练习成绩", "练习赛", "练习赛成绩"})
     async def f1_practice(self, event: AstrMessageEvent, session: str = "1"):
         """Show the latest selected practice classification.
 
@@ -416,8 +452,13 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "practice", session):
             yield result
 
-    @f1.command("standings")
-    async def f1_standings(self, event: AstrMessageEvent, category: str = "drivers"):
+    @f1.command("standings", alias={"积分榜"})
+    async def f1_standings(
+        self,
+        event: AstrMessageEvent,
+        category: str = "drivers",
+        limit: str = "",
+    ):
         """Show current-season championship standings.
 
         Args:
@@ -427,10 +468,14 @@ class F1NotifierPlugin(Star):
         Yields:
             Championship standings.
         """
-        async for result in self._reply(event, "standings", category):
+        async for result in self._reply(
+            event,
+            "standings",
+            " ".join(value for value in (category, limit) if value),
+        ):
             yield result
 
-    @f1.command("subscribe")
+    @f1.command("subscribe", alias={"订阅"})
     async def f1_subscribe(self, event: AstrMessageEvent):
         """Subscribe the current conversation.
 
@@ -443,7 +488,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "subscribe"):
             yield result
 
-    @f1.command("unsubscribe")
+    @f1.command("unsubscribe", alias={"取消订阅"})
     async def f1_unsubscribe(self, event: AstrMessageEvent):
         """Unsubscribe the current conversation.
 
@@ -457,7 +502,7 @@ class F1NotifierPlugin(Star):
             yield result
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @f1.command("push")
+    @f1.command("push", alias={"推送"})
     async def f1_push(
         self,
         event: AstrMessageEvent,
@@ -487,12 +532,21 @@ class F1NotifierPlugin(Star):
             return
         action = {
             "next": "next",
+            "下一站": "next",
             "schedule": "schedule",
+            "赛程": "schedule",
             "result": "race",
+            "正赛成绩": "race",
             "qualifying": "qualifying",
+            "排位成绩": "qualifying",
             "sprint": "sprint",
+            "冲刺成绩": "sprint",
             "practice": "practice",
+            "练习成绩": "practice",
+            "练习赛": "practice",
+            "练习赛成绩": "practice",
             "standings": "standings",
+            "积分榜": "standings",
         }.get(query.lower())
         if action is None or (action in ("next", "schedule") and argument):
             yield event.plain_result(
@@ -506,7 +560,7 @@ class F1NotifierPlugin(Star):
             yield result
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @f1.command("subs")
+    @f1.command("subs", alias={"订阅列表"})
     async def f1_subs(
         self, event: AstrMessageEvent, action: str = "list", target: str = ""
     ):
@@ -530,7 +584,14 @@ class F1NotifierPlugin(Star):
             "用法：/f1 subs [list] | /f1 subs add <会话UMO> | /f1 subs remove <会话UMO>"
         )
         try:
-            action = action.lower()
+            action = {
+                "list": "list",
+                "列表": "list",
+                "add": "add",
+                "添加": "add",
+                "remove": "remove",
+                "删除": "remove",
+            }.get(action.lower(), action.lower())
             if action == "list" and not target:
                 subscriptions = await self.scheduler.subscriptions()
                 if not subscriptions:
@@ -573,7 +634,7 @@ class F1NotifierPlugin(Star):
             logger.exception("F1 subscription management failed")
             yield event.plain_result("订阅管理失败，请查看插件日志。")
 
-    @f1.command("test")
+    @f1.command("test", alias={"测试"})
     async def f1_test(self, event: AstrMessageEvent, season: str = "2025"):
         """Check providers without changing subscriptions or delivery state.
 

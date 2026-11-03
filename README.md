@@ -2,6 +2,21 @@
 
 F1 赛事查询与会话订阅推送插件。支持文字与 F1 风格图片卡片；查询和通知使用相同数据内容。
 
+## 个人维护版本
+
+本分支是个人自用版本，基于 [MareDevi/astrbot_plugin_f1_notifier](https://github.com/MareDevi/astrbot_plugin_f1_notifier) 的 `master` 修改。原作者为 **MareDevi**，感谢其持续维护数据源适配、通知调度、图片卡片和完整测试体系。
+
+本分支保留作者原版全部功能，并增加了以下个人定制：
+
+- 为查询、订阅、测试和管理员命令增加中文子命令别名，例如 `/f1 赛程`、`/f1 正赛成绩` 和 `/f1 积分榜 车手 10`。
+- 增加图片卡片宽度设置，默认 `1120` 像素，可调范围 `1000`–`1600`。
+- 增加图片字号比例设置，默认 `125%`，可调范围 `100%`–`140%`；行高和卡片高度会同步调整。
+- 车手积分榜和车队积分榜分别支持默认显示数量，也可在命令中临时指定数量。
+
+个人版不声称替代上游版本。若不需要这些定制，请直接使用作者原仓库。
+
+个人分支：[AnzioNiko/astrbot_plugin_f1_notifier](https://github.com/AnzioNiko/astrbot_plugin_f1_notifier/tree/fix/personal-customizations)
+
 ## 功能与指令
 
 | 指令 | 功能 |
@@ -13,7 +28,7 @@ F1 赛事查询与会话订阅推送插件。支持文字与 F1 风格图片卡�
 | `/f1 qualifying [round]` | 排位赛结果，包含 Q1 / Q2 / Q3 |
 | `/f1 sprint [round]` | 冲刺赛结果 |
 | `/f1 practice [1\|2\|3]` | 最近一次指定练习赛结果，也接受 FP1 / FP2 / FP3 |
-| `/f1 standings [drivers\|teams]` | 当赛季车手 / 车队积分榜 |
+| `/f1 standings [drivers\|teams] [数量]` | 当赛季车手 / 车队积分榜；中文别名 `/f1 积分榜 [车手\|车队] [数量]` |
 | `/f1 subscribe` | 订阅当前会话 |
 | `/f1 unsubscribe` | 取消当前会话订阅 |
 | `/f1 test [season]` | 只读检查赛程、结果、发车顺序与积分榜，默认 2025 |
@@ -21,6 +36,8 @@ F1 赛事查询与会话订阅推送插件。支持文字与 F1 风格图片卡�
 | `/f1 subs` | 仅 AstrBot 管理员：列出全部订阅会话 |
 | `/f1 subs add <会话UMO>` | 仅 AstrBot 管理员：为指定会话添加订阅 |
 | `/f1 subs remove <会话UMO>` | 仅 AstrBot 管理员：取消指定会话订阅 |
+
+常用中文别名与英文命令等价：`帮助`、`赛程`、`下一站`、`正赛成绩`、`排位成绩`、`冲刺成绩`、`练习成绩`、`积分榜`、`订阅`、`取消订阅`、`测试`、`推送`、`订阅列表`。
 
 指定站次时查询当年赛季；省略站次时按对应赛段选择最近已开始的一场。当前结果尚未发布时会明确提示，不会拿上一站冒充。年初没有对应场次时，默认查询可以回到上一赛季。休赛期赛程查询会尝试获取下一赛季。
 
@@ -89,12 +106,16 @@ git clone https://github.com/MareDevi/astrbot_plugin_f1_notifier data/plugins/as
 | 配置 | 默认值 | 含义 |
 | --- | --- | --- |
 | `enable_image_render` | `false` | 使用图片卡片；关闭时完全不运行图片渲染 |
+| `image_card_width` | `1120` | 卡片宽度（像素），范围 1000–1600 |
+| `image_font_scale_percent` | `125` | 卡片文字字号比例，范围 100%–140%；行高和卡片高度同步调整 |
 | `timezone` | `Asia/Shanghai` | 显示及周末赛程推送使用的 IANA 时区；所有调度比较使用 UTC |
 | `weekend_push_day` | `周一` | 比赛周赛程推送星期，可选周一、周二、周三 |
 | `weekend_push_time` | `09:00` | 赛程推送时间，24 小时制 `HH:MM`，范围 `00:00`–`23:59` |
 | `result_poll_delay` | `5` | 场次结束后等待分钟数，0–120；OpenF1 结果实际至少等待 31 分钟，并避开所有已知场次的实时窗口 |
 | `image_cache_max_age` | `30` | 图片缓存保留分钟数，1–1440 |
 | `image_cache_max_count` | `50` | 图片缓存数量上限，1–200 |
+| `standings_driver_limit` | `20` | 未指定数量时车手积分榜默认显示人数，范围 1–30 |
+| `standings_team_limit` | `10` | 未指定数量时车队积分榜默认显示数量，范围 1–20 |
 
 图片渲染失败时查询返回文字；主动图片发送抛出异常时尝试文字。平台不支持主动消息或发送失败时保留待发送状态。订阅不代表消息平台一定允许机器人主动推送，详见 [AstrBot 主动消息说明](https://docs.astrbot.app/dev/star/guides/send-message.html)。
 

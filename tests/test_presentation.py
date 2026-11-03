@@ -124,9 +124,21 @@ def test_weekend_table_labels_dst_offset_and_preserves_circuit() -> None:
     )
 
 
-async def test_renderer_writes_cached_1200px_png(tmp_path: Path) -> None:
+def test_renderer_uses_personal_defaults(tmp_path: Path) -> None:
+    renderer = ImageRenderer(tmp_path)
+    assert renderer.card_width == 1120
+    assert renderer.font_scale_percent == 125
+
+
+async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> None:
     data_dir = tmp_path / "cards"
-    renderer = ImageRenderer(data_dir, max_age_minutes=30, max_count=10)
+    renderer = ImageRenderer(
+        data_dir,
+        max_age_minutes=30,
+        max_count=10,
+        card_width=1320,
+        font_scale_percent=125,
+    )
     table = Table(
         title="F1 冲刺周末时间表",
         subtitle="中国大奖赛 · Asia/Shanghai",
@@ -153,7 +165,7 @@ async def test_renderer_writes_cached_1200px_png(tmp_path: Path) -> None:
     assert first.suffix == ".png"
     with Image.open(first) as image:
         assert image.format == "PNG"
-        assert image.size[0] == 1200
+        assert image.size[0] == 1320
         assert 500 <= image.size[1] <= 900
 
 
@@ -251,8 +263,46 @@ async def test_renderer_sizes_many_long_rows_without_truncating_table(
         await renderer.close()
 
     with Image.open(path) as image:
-        assert image.width == 1200
+        assert image.width == 1120
         assert image.height >= 1450
+
+
+async def test_larger_font_ratio_increases_card_height(tmp_path: Path) -> None:
+    table = Table(
+        title="F1 车手积分榜",
+        columns=("名次", "车手", "车队", "积分"),
+        rows=tuple(
+            (
+                str(index),
+                f"车手 {index}",
+                f"车队名称 {index}",
+                str(300 - index),
+            )
+            for index in range(1, 11)
+        ),
+    )
+    regular = ImageRenderer(
+        tmp_path / "regular",
+        card_width=1120,
+        font_scale_percent=100,
+    )
+    enlarged = ImageRenderer(
+        tmp_path / "enlarged",
+        card_width=1120,
+        font_scale_percent=140,
+    )
+    try:
+        regular_path = await regular.render(table)
+        enlarged_path = await enlarged.render(table)
+    finally:
+        await regular.close()
+        await enlarged.close()
+
+    with Image.open(regular_path) as regular_image:
+        regular_height = regular_image.height
+    with Image.open(enlarged_path) as enlarged_image:
+        assert enlarged_image.width == 1120
+        assert enlarged_image.height > regular_height
 
 
 async def test_cache_cleanup_removes_old_and_excess_cards(tmp_path: Path) -> None:
