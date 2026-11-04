@@ -20,7 +20,7 @@ except (ImportError, OSError):
 
 from .models import Table
 
-_LAYOUT_VERSION = "f1-card-v2-personal-3"
+_LAYOUT_VERSION = "f1-card-v2-personal-4"
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _ASSETS_DIR = _PLUGIN_ROOT / "assets"
 _FONTS_DIR = _ASSETS_DIR / "fonts"
@@ -29,12 +29,12 @@ _MARGIN = 56
 _DEFAULT_CARD_WIDTH = 1120
 _MIN_CARD_WIDTH = 1000
 _MAX_CARD_WIDTH = 1600
-_DEFAULT_FONT_SCALE_PERCENT = 125
-_MIN_FONT_SCALE_PERCENT = 100
-_MAX_FONT_SCALE_PERCENT = 140
-_DEFAULT_TITLE_SCALE_PERCENT = 80
-_MIN_TITLE_SCALE_PERCENT = 60
-_MAX_TITLE_SCALE_PERCENT = 120
+_DEFAULT_BODY_FONT_SIZE = 21
+_MIN_BODY_FONT_SIZE = 14
+_MAX_BODY_FONT_SIZE = 40
+_DEFAULT_TITLE_FONT_SIZE = 41
+_MIN_TITLE_FONT_SIZE = 18
+_MAX_TITLE_FONT_SIZE = 80
 _CACHE_PREFIX = "f1-card-"
 _CIRCUIT_SVG_MAP = MappingProxyType(
     {
@@ -108,8 +108,8 @@ class ImageRenderer:
         max_age_minutes: Maximum cache age in minutes.
         max_count: Maximum number of generated cards to retain.
         card_width: Output card width in pixels.
-        font_scale_percent: Relative text size percentage.
-        title_scale_percent: Additional title-only size percentage.
+        body_font_size: Body and auxiliary text size in pixels.
+        title_font_size: Main title size in pixels.
     """
 
     def __init__(
@@ -118,24 +118,23 @@ class ImageRenderer:
         max_age_minutes: int = 30,
         max_count: int = 50,
         card_width: int = _DEFAULT_CARD_WIDTH,
-        font_scale_percent: int = _DEFAULT_FONT_SCALE_PERCENT,
-        title_scale_percent: int = _DEFAULT_TITLE_SCALE_PERCENT,
+        body_font_size: int = _DEFAULT_BODY_FONT_SIZE,
+        title_font_size: int = _DEFAULT_TITLE_FONT_SIZE,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.max_age_minutes = max(0, int(max_age_minutes))
         self.max_count = max(1, int(max_count))
         self.card_width = min(max(int(card_width), _MIN_CARD_WIDTH), _MAX_CARD_WIDTH)
-        self.font_scale_percent = min(
-            max(int(font_scale_percent), _MIN_FONT_SCALE_PERCENT),
-            _MAX_FONT_SCALE_PERCENT,
+        self.body_font_size = min(
+            max(int(body_font_size), _MIN_BODY_FONT_SIZE),
+            _MAX_BODY_FONT_SIZE,
         )
-        self.title_scale_percent = min(
-            max(int(title_scale_percent), _MIN_TITLE_SCALE_PERCENT),
-            _MAX_TITLE_SCALE_PERCENT,
+        self.title_font_size = min(
+            max(int(title_font_size), _MIN_TITLE_FONT_SIZE),
+            _MAX_TITLE_FONT_SIZE,
         )
         self._layout_scale = self.card_width / _CARD_WIDTH
-        self._font_scale = self.font_scale_percent / 100
-        self._title_scale = self.title_scale_percent / 100
+        self._body_font_scale = self.body_font_size / 18
         self._semaphore = asyncio.Semaphore(1)
         self._state_lock = asyncio.Lock()
         self._workers: dict[asyncio.Task[Path], asyncio.Event] = {}
@@ -148,16 +147,20 @@ class ImageRenderer:
         return max(1, round(value * self._layout_scale))
 
     def _t(self, value: float) -> int:
-        """Scale text-related geometry by both card width and font ratio."""
-        return max(1, round(value * self._layout_scale * self._font_scale))
+        """Scale text-related geometry from the configured body font size."""
+        return max(1, round(value * self._body_font_scale))
 
     def _font_size(self, value: int) -> int:
         """Return a configured pixel size for a text element."""
         return self._t(value)
 
     def _title_font_size(self, value: int) -> int:
-        """Return the title-only font size after all scale settings."""
-        return max(1, round(self._t(value) * self._title_scale))
+        """Return the independently configured title font size."""
+        return self.title_font_size
+
+    def _subtitle_width(self, title_width: int) -> int:
+        """Reserve space for the circuit graphic at the header's right edge."""
+        return max(self._s(220), title_width - self._s(110))
 
     async def render(self, table: Table) -> Path:
         """Render a table to a PNG card.
@@ -408,8 +411,8 @@ class ImageRenderer:
             table.footer,
             table.circuit_id,
             str(self.card_width),
-            str(self.font_scale_percent),
-            str(self.title_scale_percent),
+            str(self.body_font_size),
+            str(self.title_font_size),
         ]
         digest = hashlib.sha256("\x1d".join(parts).encode("utf-8")).hexdigest()[:24]
         return self.data_dir / f"{_CACHE_PREFIX}{digest}.png"
@@ -490,7 +493,7 @@ class ImageRenderer:
             table: Structured content to draw.
 
         Returns:
-            A RGB card image using the configured width and font ratio.
+            A RGB card image using the configured width and font sizes.
         """
         width = self.card_width
         margin = self._s(_MARGIN)
@@ -634,13 +637,16 @@ class ImageRenderer:
 
         title_x = margin + self._s(196)
         title_width = max(self._s(220), width - title_x - self._s(190))
+        subtitle_width = self._subtitle_width(title_width)
         title = self._ellipsize(
             (table.title or "F1 信息").upper(),
             title_font,
             title_width,
         )
         draw.text((title_x, self._t(34)), title, font=title_font, fill=ink)
-        subtitle = self._ellipsize(table.subtitle.upper(), subtitle_font, title_width)
+        subtitle = self._ellipsize(
+            table.subtitle.upper(), subtitle_font, subtitle_width
+        )
         if subtitle:
             draw.text(
                 (title_x, self._t(94)),

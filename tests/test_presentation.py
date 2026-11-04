@@ -127,14 +127,14 @@ def test_weekend_table_labels_dst_offset_and_preserves_circuit() -> None:
 def test_renderer_uses_personal_defaults(tmp_path: Path) -> None:
     renderer = ImageRenderer(tmp_path)
     assert renderer.card_width == 1120
-    assert renderer.font_scale_percent == 125
-    assert renderer.title_scale_percent == 80
+    assert renderer.body_font_size == 21
+    assert renderer.title_font_size == 41
 
 
-def test_title_scale_only_changes_title_font_size(tmp_path: Path) -> None:
-    small = ImageRenderer(tmp_path, title_scale_percent=60)
-    default = ImageRenderer(tmp_path, title_scale_percent=80)
-    large = ImageRenderer(tmp_path, title_scale_percent=120)
+def test_title_font_size_only_changes_title_font_size(tmp_path: Path) -> None:
+    small = ImageRenderer(tmp_path, title_font_size=24)
+    default = ImageRenderer(tmp_path, title_font_size=41)
+    large = ImageRenderer(tmp_path, title_font_size=72)
 
     assert small._title_font_size(44) < default._title_font_size(44)
     assert default._title_font_size(44) < large._title_font_size(44)
@@ -152,6 +152,15 @@ def test_title_scale_only_changes_title_font_size(tmp_path: Path) -> None:
     )
 
 
+def test_subtitle_width_reserves_room_for_circuit_graphic(tmp_path: Path) -> None:
+    renderer = ImageRenderer(tmp_path)
+    title_width = 800
+    subtitle_width = renderer._subtitle_width(title_width)
+
+    assert subtitle_width >= renderer._s(220)
+    assert subtitle_width <= title_width - 100
+
+
 async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> None:
     data_dir = tmp_path / "cards"
     renderer = ImageRenderer(
@@ -159,7 +168,8 @@ async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> No
         max_age_minutes=30,
         max_count=10,
         card_width=1320,
-        font_scale_percent=125,
+        body_font_size=21,
+        title_font_size=41,
     )
     table = Table(
         title="F1 冲刺周末时间表",
@@ -289,7 +299,7 @@ async def test_renderer_sizes_many_long_rows_without_truncating_table(
         assert image.height >= 1450
 
 
-async def test_larger_font_ratio_increases_card_height(tmp_path: Path) -> None:
+async def test_larger_body_font_size_increases_card_height(tmp_path: Path) -> None:
     table = Table(
         title="F1 车手积分榜",
         columns=("名次", "车手", "车队", "积分"),
@@ -306,12 +316,12 @@ async def test_larger_font_ratio_increases_card_height(tmp_path: Path) -> None:
     regular = ImageRenderer(
         tmp_path / "regular",
         card_width=1120,
-        font_scale_percent=100,
+        body_font_size=16,
     )
     enlarged = ImageRenderer(
         tmp_path / "enlarged",
         card_width=1120,
-        font_scale_percent=140,
+        body_font_size=32,
     )
     try:
         regular_path = await regular.render(table)

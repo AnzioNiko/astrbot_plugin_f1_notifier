@@ -93,8 +93,8 @@ class F1NotifierPlugin(Star):
             raise ValueError("weekend_push_time must use HH:MM between 00:00 and 23:59")
         for key, default, minimum, maximum in (
             ("image_card_width", 1120, 1000, 1600),
-            ("image_font_scale_percent", 125, 100, 140),
-            ("image_title_font_scale_percent", 80, 60, 120),
+            ("image_body_font_size", 21, 14, 40),
+            ("image_title_font_size", 41, 18, 80),
             ("result_poll_delay", 5, 0, 120),
             ("image_cache_max_age", 30, 1, 1440),
             ("image_cache_max_count", 50, 1, 200),
@@ -125,8 +125,8 @@ class F1NotifierPlugin(Star):
             max_age_minutes=self.config["image_cache_max_age"],
             max_count=self.config["image_cache_max_count"],
             card_width=self.config["image_card_width"],
-            font_scale_percent=self.config["image_font_scale_percent"],
-            title_scale_percent=self.config["image_title_font_scale_percent"],
+            body_font_size=self.config["image_body_font_size"],
+            title_font_size=self.config["image_title_font_size"],
         )
         try:
             await self.client.open()
