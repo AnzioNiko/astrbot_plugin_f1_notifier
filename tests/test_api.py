@@ -649,3 +649,22 @@ async def test_standings_limit_truncates_driver_rows(client, monkeypatch):
     assert table is not None
     assert len(table.rows) == 2
     assert table.rows[0][1] == "Driver1 Test"
+
+
+async def test_driver_headshots_match_normalized_driver_names(client, monkeypatch):
+    async def response(base, path, params=None, ttl=30):
+        assert path == "/drivers"
+        return [
+            {
+                "full_name": "Max Verstappen",
+                "name_acronym": "VER",
+                "last_name": "Verstappen",
+                "headshot_url": "https://example.invalid/max.png",
+            }
+        ]
+
+    monkeypatch.setattr(client, "_get", response)
+    lookup = await client.driver_headshots()
+
+    assert lookup[api.normalise_driver_key("Max Verstappen")].endswith("/max.png")
+    assert lookup[api.normalise_driver_key("VER")].endswith("/max.png")

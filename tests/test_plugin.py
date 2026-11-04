@@ -284,7 +284,37 @@ async def test_initialize_uses_real_astrbot_api_and_restores_state(plugin):
     assert plugin.client._session is not None
     assert plugin.renderer.card_width == 1120
     assert plugin.renderer.body_font_size == 21
+    assert plugin.renderer.subtitle_font_size == 22
     assert plugin.renderer.title_font_size == 41
+
+
+async def test_image_table_attaches_driver_headshots(plugin):
+    url = "https://example.invalid/max.png"
+    plugin.client.driver_headshots = AsyncMock(return_value={"maxverstappen": url})
+    table = Table(
+        "正赛结果",
+        columns=("名次", "车手", "车队"),
+        rows=(("1", "Max Verstappen", "Red Bull"),),
+    )
+
+    enriched = await plugin._with_driver_headshots(table)
+
+    assert enriched.row_avatars == ((None, url, None),)
+    plugin.client.driver_headshots.assert_awaited_once()
+
+
+async def test_schedule_table_does_not_request_driver_headshots(plugin):
+    plugin.client.driver_headshots = AsyncMock()
+    table = Table(
+        "赛程",
+        columns=("开始时间", "赛段"),
+        rows=(("2026-11-06 23:30", "练习赛 FP1"),),
+    )
+
+    unchanged = await plugin._with_driver_headshots(table)
+
+    assert unchanged is table
+    plugin.client.driver_headshots.assert_not_called()
 
 
 def test_chinese_subcommand_aliases_are_registered(module):
@@ -461,6 +491,8 @@ def test_invalid_weekend_reminder_settings_rejected(module, settings):
         ({"image_card_width": 1601}, "image_card_width"),
         ({"image_body_font_size": 13}, "image_body_font_size"),
         ({"image_body_font_size": True}, "image_body_font_size"),
+        ({"image_subtitle_font_size": 11}, "image_subtitle_font_size"),
+        ({"image_subtitle_font_size": 49}, "image_subtitle_font_size"),
         ({"image_title_font_size": 17}, "image_title_font_size"),
         ({"image_title_font_size": 81}, "image_title_font_size"),
         ({"standings_driver_limit": 0}, "standings_driver_limit"),

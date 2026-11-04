@@ -8,9 +8,11 @@ import io
 import os
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
+import aiohttp
 from PIL import Image, ImageDraw, ImageFont
 
 try:
@@ -20,7 +22,7 @@ except (ImportError, OSError):
 
 from .models import Table
 
-_LAYOUT_VERSION = "f1-card-v2-personal-4"
+_LAYOUT_VERSION = "f1-card-v2-personal-5"
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _ASSETS_DIR = _PLUGIN_ROOT / "assets"
 _FONTS_DIR = _ASSETS_DIR / "fonts"
@@ -32,6 +34,9 @@ _MAX_CARD_WIDTH = 1600
 _DEFAULT_BODY_FONT_SIZE = 21
 _MIN_BODY_FONT_SIZE = 14
 _MAX_BODY_FONT_SIZE = 40
+_DEFAULT_SUBTITLE_FONT_SIZE = 22
+_MIN_SUBTITLE_FONT_SIZE = 12
+_MAX_SUBTITLE_FONT_SIZE = 48
 _DEFAULT_TITLE_FONT_SIZE = 41
 _MIN_TITLE_FONT_SIZE = 18
 _MAX_TITLE_FONT_SIZE = 80
@@ -109,6 +114,7 @@ class ImageRenderer:
         max_count: Maximum number of generated cards to retain.
         card_width: Output card width in pixels.
         body_font_size: Body and auxiliary text size in pixels.
+        subtitle_font_size: Subtitle size in pixels.
         title_font_size: Main title size in pixels.
     """
 
@@ -119,6 +125,7 @@ class ImageRenderer:
         max_count: int = 50,
         card_width: int = _DEFAULT_CARD_WIDTH,
         body_font_size: int = _DEFAULT_BODY_FONT_SIZE,
+        subtitle_font_size: int = _DEFAULT_SUBTITLE_FONT_SIZE,
         title_font_size: int = _DEFAULT_TITLE_FONT_SIZE,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -128,6 +135,10 @@ class ImageRenderer:
         self.body_font_size = min(
             max(int(body_font_size), _MIN_BODY_FONT_SIZE),
             _MAX_BODY_FONT_SIZE,
+        )
+        self.subtitle_font_size = min(
+            max(int(subtitle_font_size), _MIN_SUBTITLE_FONT_SIZE),
+            _MAX_SUBTITLE_FONT_SIZE,
         )
         self.title_font_size = min(
             max(int(title_font_size), _MIN_TITLE_FONT_SIZE),
@@ -140,6 +151,8 @@ class ImageRenderer:
         self._workers: dict[asyncio.Task[Path], asyncio.Event] = {}
         self._font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
         self._latin_font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
+        self._headshot_cache: dict[str, Image.Image | None] = {}
+        self._headshot_dir = self.data_dir.parent / "headshots"
         self._closed = False
 
     def _s(self, value: float) -> int:
@@ -158,9 +171,140 @@ class ImageRenderer:
         """Return the independently configured title font size."""
         return self.title_font_size
 
+    def _subtitle_font_size(self, value: int) -> int:
+        """Return the independently configured subtitle font size."""
+        return self.subtitle_font_size
+
     def _subtitle_width(self, title_width: int) -> int:
         """Reserve space for the circuit graphic at the header's right edge."""
         return max(self._s(220), title_width - self._s(110))
+
+    def _headshot_cache_path(self, url: str) -> Path:
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        return self._headshot_dir / f"{digest}.img"
+
+    def _make_circular(self, source: Image.Image, size: int) -> Image.Image:
+        resized = source.resize((size, size), Image.Resampling.LANCZOS)
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+        result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        result.paste(resized, (0, 0), mask)
+        return result
+
+    def _read_persisted_headshot(self, url: str) -> Image.Image | None:
+        path = self._headshot_cache_path(url)
+        if not path.is_file():
+            return None
+        try:
+            with Image.open(path) as source:
+                return source.convert("RGBA").copy()
+        except (OSError, ValueError):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _persist_headshot(self, url: str, data: bytes) -> None:
+        path = self._headshot_cache_path(url)
+        temporary_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent,
+                prefix=f"{path.stem}-",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary.write(data)
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, path)
+            self._prune_headshots()
+        except OSError:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _prune_headshots(self) -> None:
+        try:
+            entries = sorted(
+                self._headshot_dir.glob("*.img"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for path in entries[100:]:
+                path.unlink(missing_ok=True)
+        except OSError:
+            return
+
+    def _decode_headshot(self, data: bytes) -> Image.Image:
+        with Image.open(io.BytesIO(data)) as source:
+            return source.convert("RGBA").copy()
+
+    async def _load_headshot(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+    ) -> Image.Image | None:
+        if url in self._headshot_cache:
+            return self._headshot_cache[url]
+        cached = await asyncio.to_thread(self._read_persisted_headshot, url)
+        if cached is not None:
+            self._headshot_cache[url] = cached
+            return cached
+        try:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                declared = response.content_length
+                if declared is not None and declared > 1024 * 1024:
+                    raise ValueError("headshot exceeds size limit")
+                data = await response.read()
+                if len(data) > 1024 * 1024:
+                    raise ValueError("headshot exceeds size limit")
+            image = await asyncio.to_thread(self._decode_headshot, data)
+            self._headshot_cache[url] = image
+            await asyncio.to_thread(self._persist_headshot, url, data)
+            return image
+        except (aiohttp.ClientError, OSError, ValueError, asyncio.TimeoutError):
+            self._headshot_cache[url] = None
+            return None
+
+    async def _prepare_headshots(self, table: Table) -> dict[str, Image.Image]:
+        urls = sorted(
+            {
+                url
+                for row in table.row_avatars
+                for url in row
+                if isinstance(url, str) and url.startswith(("http://", "https://"))
+            }
+        )
+        if not urls:
+            return {}
+        semaphore = asyncio.Semaphore(4)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10),
+            headers={"User-Agent": "AstrBot-F1-Notifier/2.1"},
+        ) as session:
+
+            async def fetch(url: str) -> tuple[str, Image.Image | None]:
+                async with semaphore:
+                    return url, await self._load_headshot(url, session)
+
+            loaded = await asyncio.gather(*(fetch(url) for url in urls))
+        return {url: image for url, image in loaded if image is not None}
+
+    def _cache_is_fresh(self, path: Path) -> bool:
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            return False
+        return age <= self.max_age_minutes * 60
+
+    @staticmethod
+    def _is_rank_table(rows: tuple[tuple[str, ...], ...]) -> bool:
+        return bool(rows) and all(row[0].strip().isdigit() for row in rows)
 
     async def render(self, table: Table) -> Path:
         """Render a table to a PNG card.
@@ -177,10 +321,18 @@ class ImageRenderer:
         await self._semaphore.acquire()
         task: asyncio.Task[Path] | None = None
         try:
+            output_path = self._cache_path(table)
+            headshots = (
+                {}
+                if self._cache_is_fresh(output_path)
+                else await self._prepare_headshots(table)
+            )
             async with self._state_lock:
                 if self._closed:
                     raise RuntimeError("ImageRenderer is closed")
-                task = asyncio.create_task(asyncio.to_thread(self._render_sync, table))
+                task = asyncio.create_task(
+                    asyncio.to_thread(self._render_sync, table, headshots)
+                )
                 event = asyncio.Event()
                 self._workers[task] = event
 
@@ -209,6 +361,10 @@ class ImageRenderer:
             events = tuple(self._workers.values())
         if events:
             await asyncio.gather(*(event.wait() for event in events))
+        for image in self._headshot_cache.values():
+            if image is not None:
+                image.close()
+        self._headshot_cache.clear()
 
     def _load_font(self, size: int, *, bold: bool = False) -> ImageFont.ImageFont:
         """Load the first available CJK-capable font.
@@ -410,8 +566,12 @@ class ImageRenderer:
             "\x1f".join("\x1e".join(row) for row in table.rows),
             table.footer,
             table.circuit_id,
+            "\x1c".join(
+                "\x1f".join(url or "" for url in row) for row in table.row_avatars
+            ),
             str(self.card_width),
             str(self.body_font_size),
+            str(self.subtitle_font_size),
             str(self.title_font_size),
         ]
         digest = hashlib.sha256("\x1d".join(parts).encode("utf-8")).hexdigest()[:24]
@@ -448,7 +608,11 @@ class ImageRenderer:
             except OSError:
                 continue
 
-    def _render_sync(self, table: Table) -> Path:
+    def _render_sync(
+        self,
+        table: Table,
+        headshots: Mapping[str, Image.Image] | None = None,
+    ) -> Path:
         """Render one table in a worker thread.
 
         Args:
@@ -467,7 +631,7 @@ class ImageRenderer:
             pass
 
         if not cache_fresh:
-            image = self._draw_card(table)
+            image = self._draw_card(table, headshots or {})
             temporary_path: Path | None = None
             try:
                 with tempfile.NamedTemporaryFile(
@@ -486,7 +650,11 @@ class ImageRenderer:
         self._prune_cache(output_path)
         return output_path
 
-    def _draw_card(self, table: Table) -> Image.Image:
+    def _draw_card(
+        self,
+        table: Table,
+        headshots: Mapping[str, Image.Image],
+    ) -> Image.Image:
         """Draw the complete card image.
 
         Args:
@@ -504,10 +672,13 @@ class ImageRenderer:
         latin_bold = self._load_latin_font(self._font_size(18), bold=True)
         header_font = self._load_font(self._font_size(16), bold=True)
         title_font = self._load_font(self._title_font_size(44), bold=True)
-        subtitle_font = self._load_font(self._font_size(19))
+        subtitle_font = self._load_font(self._subtitle_font_size(19))
         footer_font = self._load_font(self._font_size(16))
         micro_font = self._load_latin_font(self._font_size(12), bold=True)
         row_index_font = self._load_latin_font(self._font_size(14), bold=True)
+        title_y = self._t(34)
+        subtitle_y = title_y + self.title_font_size + self._t(20)
+        micro_y = subtitle_y + self.subtitle_font_size + self._t(14)
 
         column_count = max(
             len(table.columns),
@@ -518,9 +689,22 @@ class ImageRenderer:
         normalized_rows = tuple(
             tuple(row) + ("",) * (column_count - len(row)) for row in table.rows
         )
+        avatar_rows = [
+            list(row) + [None] * (column_count - len(row)) for row in table.row_avatars
+        ]
+        while len(avatar_rows) < len(normalized_rows):
+            avatar_rows.append([None] * column_count)
+        rank_table = self._is_rank_table(normalized_rows)
+        driver_column = columns.index("车手") if "车手" in columns else None
+        avatar_size = self._t(34)
+        avatar_gap = self._s(8)
+        avatar_extra = avatar_size + avatar_gap
+        driver_has_avatars = driver_column is not None and any(
+            row[driver_column] for row in avatar_rows
+        )
 
         measure = ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength
-        index_width = self._s(54)
+        index_width = 0 if rank_table else self._s(54)
         usable_width = table_width - index_width
         natural_widths = []
         for index, heading in enumerate(columns):
@@ -535,6 +719,8 @@ class ImageRenderer:
                 ),
                 default=0,
             )
+            if index == driver_column and driver_has_avatars:
+                widest += avatar_extra
             natural_widths.append(
                 min(
                     max(float(self._s(82)), widest + self._s(28)),
@@ -552,15 +738,19 @@ class ImageRenderer:
         wrapped_fonts: list[list[ImageFont.ImageFont]] = []
         row_heights: list[int] = []
         line_height = self._t(24)
-        for row in normalized_rows:
+        for row_index, row in enumerate(normalized_rows):
             wrapped_row: list[list[str]] = []
             row_fonts: list[ImageFont.ImageFont] = []
             for index in range(column_count):
                 cell_font = latin_regular if row[index].isascii() else regular
                 row_fonts.append(cell_font)
-                wrapped_row.append(
-                    self._wrap(row[index], cell_font, widths[index] - self._s(20))
-                )
+                available_width = widths[index] - self._s(20)
+                if (
+                    index == driver_column
+                    and avatar_rows[row_index][index] in headshots
+                ):
+                    available_width -= avatar_extra
+                wrapped_row.append(self._wrap(row[index], cell_font, available_width))
             wrapped_rows.append(wrapped_row)
             wrapped_fonts.append(row_fonts)
             row_heights.append(
@@ -571,7 +761,10 @@ class ImageRenderer:
                 )
             )
 
-        header_height = self._t(180)
+        header_height = max(
+            self._t(180),
+            micro_y + self._font_size(12) + self._t(24),
+        )
         column_header_height = self._t(52)
         footer_height = self._t(82)
         table_height = sum(row_heights)
@@ -643,19 +836,19 @@ class ImageRenderer:
             title_font,
             title_width,
         )
-        draw.text((title_x, self._t(34)), title, font=title_font, fill=ink)
+        draw.text((title_x, title_y), title, font=title_font, fill=ink)
         subtitle = self._ellipsize(
             table.subtitle.upper(), subtitle_font, subtitle_width
         )
         if subtitle:
             draw.text(
-                (title_x, self._t(94)),
+                (title_x, subtitle_y),
                 subtitle,
                 font=subtitle_font,
                 fill="#4B4B4B",
             )
         draw.text(
-            (title_x, self._t(136)),
+            (title_x, micro_y),
             "F1 // TIMING GRAPHIC",
             font=micro_font,
             fill=red,
@@ -708,12 +901,13 @@ class ImageRenderer:
             (0, header_top, width, header_top + column_header_height),
             fill=red,
         )
-        draw.text(
-            (margin, header_top + self._s(17)),
-            "NO.",
-            font=micro_font,
-            fill=white,
-        )
+        if not rank_table:
+            draw.text(
+                (margin, header_top + self._s(17)),
+                "NO.",
+                font=micro_font,
+                fill=white,
+            )
         x = margin + index_width
         for index, heading in enumerate(columns):
             label = self._ellipsize(
@@ -727,9 +921,6 @@ class ImageRenderer:
             )
             x += widths[index]
 
-        rank_table = bool(normalized_rows) and all(
-            row[0].strip().isdigit() for row in normalized_rows
-        )
         session_labels = {"正赛", "RACE", "R"}
 
         y = header_top + column_header_height
@@ -743,12 +934,13 @@ class ImageRenderer:
             background = "#080808" if row_index % 2 == 0 else "#101010"
             draw.rectangle((0, y, width, y + row_height), fill=background)
             draw.rectangle((0, y, self._s(6), y + row_height), fill=accent)
-            draw.text(
-                (margin, y + self._t(18)),
-                f"{row_index + 1:02d}",
-                font=row_index_font,
-                fill=muted if not (is_race or is_podium) else red,
-            )
+            if not rank_table:
+                draw.text(
+                    (margin, y + self._t(18)),
+                    f"{row_index + 1:02d}",
+                    font=row_index_font,
+                    fill=muted if not (is_race or is_podium) else red,
+                )
 
             x = margin + index_width
             for column_index, lines in enumerate(wrapped_row):
@@ -769,8 +961,32 @@ class ImageRenderer:
                 elif rank_table and column_index == column_count - 1:
                     align = "right"
 
+                headshot = None
+                if column_index == driver_column:
+                    avatar_url = avatar_rows[row_index][column_index]
+                    raw_headshot = headshots.get(avatar_url) if avatar_url else None
+                    if raw_headshot is not None:
+                        headshot = self._make_circular(raw_headshot, avatar_size)
+                        headshot_x = x + self._s(12)
+                        headshot_y = y + (row_height - avatar_size) // 2
+                        draw.ellipse(
+                            (
+                                headshot_x - self._s(1),
+                                headshot_y - self._s(1),
+                                headshot_x + avatar_size + self._s(1),
+                                headshot_y + avatar_size + self._s(1),
+                            ),
+                            outline="#565656",
+                            width=self._s(1),
+                        )
+                        image.paste(headshot, (headshot_x, headshot_y), headshot)
+                        headshot.close()
+
+                line_x_offset = self._s(12)
+                if headshot is not None:
+                    line_x_offset += avatar_size + avatar_gap
                 for line_index, line in enumerate(lines):
-                    line_x = x + self._s(12)
+                    line_x = x + line_x_offset
                     line_width = measure(line, font=draw_font)
                     if align == "center":
                         line_x = x + (widths[column_index] - line_width) / 2

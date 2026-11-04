@@ -130,3 +130,4 @@ class Table:
     rows: tuple[tuple[str, ...], ...] = ()
     footer: str = ""
     circuit_id: str = ""
+    row_avatars: tuple[tuple[str | None, ...], ...] = ()

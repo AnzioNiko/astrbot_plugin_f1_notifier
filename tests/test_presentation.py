@@ -128,6 +128,7 @@ def test_renderer_uses_personal_defaults(tmp_path: Path) -> None:
     renderer = ImageRenderer(tmp_path)
     assert renderer.card_width == 1120
     assert renderer.body_font_size == 21
+    assert renderer.subtitle_font_size == 22
     assert renderer.title_font_size == 41
 
 
@@ -152,6 +153,28 @@ def test_title_font_size_only_changes_title_font_size(tmp_path: Path) -> None:
     )
 
 
+def test_subtitle_font_size_is_independent(tmp_path: Path) -> None:
+    small = ImageRenderer(tmp_path, subtitle_font_size=14)
+    default = ImageRenderer(tmp_path, subtitle_font_size=22)
+    large = ImageRenderer(tmp_path, subtitle_font_size=44)
+
+    assert small._subtitle_font_size(19) < default._subtitle_font_size(19)
+    assert default._subtitle_font_size(19) < large._subtitle_font_size(19)
+    assert small._font_size(18) == default._font_size(18) == large._font_size(18)
+    assert small._title_font_size(44) == default._title_font_size(44)
+    table = Table(title="副标题缓存")
+    assert (
+        len(
+            {
+                small._cache_path(table),
+                default._cache_path(table),
+                large._cache_path(table),
+            }
+        )
+        == 3
+    )
+
+
 def test_subtitle_width_reserves_room_for_circuit_graphic(tmp_path: Path) -> None:
     renderer = ImageRenderer(tmp_path)
     title_width = 800
@@ -159,6 +182,32 @@ def test_subtitle_width_reserves_room_for_circuit_graphic(tmp_path: Path) -> Non
 
     assert subtitle_width >= renderer._s(220)
     assert subtitle_width <= title_width - 100
+
+
+def test_rank_table_omits_redundant_row_number_column() -> None:
+    assert ImageRenderer._is_rank_table((("1", "车手 A"), ("2", "车手 B")))
+    assert not ImageRenderer._is_rank_table((("2026-11-06", "练习赛 FP1"),))
+
+
+def test_driver_headshot_is_drawn_before_ranked_driver_name(
+    tmp_path: Path,
+) -> None:
+    renderer = ImageRenderer(tmp_path)
+    headshot = Image.new("RGBA", (40, 40), "red")
+    url = "https://example.invalid/driver.png"
+    table = Table(
+        "正赛结果",
+        "2026 第 19 站",
+        ("名次", "车手", "车队", "积分"),
+        (("1", "Max Verstappen", "Red Bull", "25"),),
+        row_avatars=((None, url, None, None),),
+    )
+
+    without = renderer._draw_card(table, {})
+    with_headshot = renderer._draw_card(table, {url: headshot})
+
+    assert with_headshot.size == without.size
+    assert with_headshot.tobytes() != without.tobytes()
 
 
 async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> None:
@@ -209,11 +258,14 @@ async def test_cancelled_render_keeps_worker_until_close(
     renderer = ImageRenderer(tmp_path, max_age_minutes=30, max_count=10)
     original_render_sync = renderer._render_sync
 
-    def blocked_render_sync(table: Table) -> Path:
+    def blocked_render_sync(
+        table: Table,
+        headshots=None,
+    ) -> Path:
         """Wait until the test explicitly releases the worker."""
         entered.set()
         release.wait(timeout=2)
-        return original_render_sync(table)
+        return original_render_sync(table, headshots)
 
     monkeypatch.setattr(renderer, "_render_sync", blocked_render_sync)
     table = Table(

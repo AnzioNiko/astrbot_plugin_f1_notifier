@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,7 +11,11 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .src.astrbot_plugin_f1_notifier.api import DataError, F1Client
+from .src.astrbot_plugin_f1_notifier.api import (
+    DataError,
+    F1Client,
+    normalise_driver_key,
+)
 from .src.astrbot_plugin_f1_notifier.formatter import (
     format_table,
     schedule_table,
@@ -94,6 +99,7 @@ class F1NotifierPlugin(Star):
         for key, default, minimum, maximum in (
             ("image_card_width", 1120, 1000, 1600),
             ("image_body_font_size", 21, 14, 40),
+            ("image_subtitle_font_size", 22, 12, 48),
             ("image_title_font_size", 41, 18, 80),
             ("result_poll_delay", 5, 0, 120),
             ("image_cache_max_age", 30, 1, 1440),
@@ -126,6 +132,7 @@ class F1NotifierPlugin(Star):
             max_count=self.config["image_cache_max_count"],
             card_width=self.config["image_card_width"],
             body_font_size=self.config["image_body_font_size"],
+            subtitle_font_size=self.config["image_subtitle_font_size"],
             title_font_size=self.config["image_title_font_size"],
         )
         try:
@@ -169,6 +176,7 @@ class F1NotifierPlugin(Star):
         text = format_table(table)
         if self.config.get("enable_image_render") and self.renderer is not None:
             try:
+                table = await self._with_driver_headshots(table)
                 image = await self.renderer.render(table)
                 return bool(
                     await self.context.send_message(
@@ -179,6 +187,45 @@ class F1NotifierPlugin(Star):
                 logger.exception("F1 image delivery failed; falling back to text")
         return bool(
             await self.context.send_message(origin, MessageChain().message(text))
+        )
+
+    async def _with_driver_headshots(self, table: Table) -> Table:
+        """Attach available OpenF1 portrait URLs to a table's driver column."""
+        try:
+            driver_column = table.columns.index("车手")
+        except ValueError:
+            return table
+        if not table.rows:
+            return table
+        current_avatars = [
+            list(row) + [None] * (len(table.columns) - len(row))
+            for row in table.row_avatars
+        ]
+        while len(current_avatars) < len(table.rows):
+            current_avatars.append([None] * len(table.columns))
+        if all(
+            current_avatars[index][driver_column] for index in range(len(table.rows))
+        ):
+            return table
+        lookup = await self.client.driver_headshots()
+        if not lookup:
+            return table
+        changed = False
+        for index, row in enumerate(table.rows):
+            if current_avatars[index][driver_column]:
+                continue
+            name = row[driver_column] if driver_column < len(row) else ""
+            url = lookup.get(normalise_driver_key(str(name)))
+            if url:
+                current_avatars[index][driver_column] = url
+                changed = True
+        return (
+            replace(
+                table,
+                row_avatars=tuple(tuple(row) for row in current_avatars),
+            )
+            if changed
+            else table
         )
 
     async def _reply(
@@ -344,6 +391,7 @@ class F1NotifierPlugin(Star):
                 return
             if self.config.get("enable_image_render"):
                 try:
+                    table = await self._with_driver_headshots(table)
                     image = await self.renderer.render(table)
                     yield event.image_result(str(image))
                     return

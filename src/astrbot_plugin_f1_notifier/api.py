@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,19 @@ OPENF1_NAMES = {
     "sprint": "Sprint",
     "race": "Race",
 }
+
+
+def normalise_driver_key(value: str | None) -> str:
+    """Normalize driver names for matching across Jolpica and OpenF1."""
+    if not value:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    )
+    return "".join(
+        character for character in without_marks.casefold() if character.isalnum()
+    )
 
 
 class DataError(Exception):
@@ -342,6 +356,40 @@ class F1Client:
             except (ValueError, TypeError):
                 pass
         return matched
+
+    async def driver_headshots(self) -> dict[str, str]:
+        """Return normalized driver aliases mapped to OpenF1 headshot URLs."""
+        try:
+            rows = await self._get(
+                self.openf1_base,
+                "/drivers",
+                {"session_key": "latest"},
+                ttl=86400,
+            )
+        except DataError:
+            return {}
+        if not isinstance(rows, list):
+            return {}
+        lookup: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("headshot_url") or "").strip()
+            if not url:
+                continue
+            for candidate in (
+                row.get("name_acronym"),
+                row.get("full_name"),
+                row.get("broadcast_name"),
+                row.get("first_name"),
+                row.get("last_name"),
+            ):
+                key = normalise_driver_key(
+                    str(candidate) if candidate is not None else None
+                )
+                if key:
+                    lookup[key] = url
+        return lookup
 
     async def results(self, race: Race, kind: str) -> Table | None:
         """Read results for an exact season, round, and session.
