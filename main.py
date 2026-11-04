@@ -21,21 +21,21 @@ from .src.astrbot_plugin_f1_notifier.models import Table
 from .src.astrbot_plugin_f1_notifier.scheduler import F1Scheduler
 
 HELP_TEXT = """F1 Notifier
-/f1 help（帮助）— 显示帮助
-/f1 schedule（赛程）— 未来 5 站赛程
-/f1 next（下一站）— 下一站完整周末时间表
-/f1 result（正赛成绩）[round] — 正赛结果，默认最近一站
-/f1 qualifying（排位成绩）[round] — 排位赛结果
-/f1 sprint（冲刺成绩）[round] — 冲刺赛结果
-/f1 practice（练习成绩）[1|2|3] — 最近一次指定练习赛结果
-/f1 standings（积分榜）[drivers|teams|车手|车队] [数量] — 车手 / 车队积分榜
-/f1 subscribe（订阅）— 订阅当前会话
-/f1 unsubscribe（取消订阅）— 取消当前会话订阅
-/f1 test（测试）[season] — 只读检查数据源，默认 2025
-/f1 push <群UMO> <next|schedule|result|qualifying|sprint|practice|standings> [参数] — 管理员定向推送
-/f1 subs（订阅列表）— 管理员：列出全部订阅会话
-/f1 subs add <会话UMO> — 管理员：添加订阅
-/f1 subs remove <会话UMO> — 管理员：取消订阅
+/f1 帮助（help）— 显示帮助
+/f1 赛程（schedule）— 未来 5 站赛程
+/f1 下一站（next）— 下一站完整周末时间表
+/f1 正赛成绩（result）[round] — 正赛结果，默认最近一站
+/f1 排位成绩（qualifying）[round] — 排位赛结果
+/f1 冲刺成绩（sprint）[round] — 冲刺赛结果
+/f1 练习成绩（practice）[1|2|3] — 最近一次指定练习赛结果
+/f1 积分榜（standings）[车手|车队] [数量] — 车手 / 车队积分榜
+/f1 订阅（subscribe）— 订阅当前会话
+/f1 取消订阅（unsubscribe）— 取消当前会话订阅
+/f1 测试（test）[season] — 只读检查数据源，默认 2025
+/f1 推送（push）<群UMO> <查询类型> [参数] — 管理员定向推送
+/f1 订阅列表（subs）— 管理员：列出全部订阅会话
+/f1 订阅列表 添加（subs add）<会话UMO> — 管理员：添加订阅
+/f1 订阅列表 删除（subs remove）<会话UMO> — 管理员：取消订阅
 
 订阅推送：比赛周指定星期与时间的周末赛程、各节练习赛 / 排位赛 / 冲刺赛结果、正赛前 35 至 30 分钟已发布的发车顺序、正赛结果。
 OpenF1 查询避开场次开始前 30 分钟至结束后 30 分钟；练习赛和冲刺排位赛结果至少等待结束后 31 分钟。
