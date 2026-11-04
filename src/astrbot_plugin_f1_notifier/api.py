@@ -48,6 +48,26 @@ def normalise_driver_key(value: str | None) -> str:
     )
 
 
+def driver_display_name(driver: dict) -> str:
+    """Return the preferred short display name for a Jolpica driver."""
+    full_name = (
+        f"{driver.get('givenName', '')} {driver.get('familyName', '')}".strip()
+        or str(driver.get("driverId") or "—")
+    )
+    overrides = {
+        "andreakimiantonelli": "Kimi Antonelli",
+        "antonelli": "Kimi Antonelli",
+    }
+    for candidate in (
+        driver.get("driverId"),
+        full_name,
+    ):
+        key = normalise_driver_key(str(candidate) if candidate is not None else None)
+        if key in overrides:
+            return overrides[key]
+    return full_name
+
+
 class DataError(Exception):
     """A data provider is temporarily unavailable or returned invalid data."""
 
@@ -481,10 +501,7 @@ class F1Client:
             output = []
             for row in rows:
                 driver = row.get("Driver") or {}
-                name = (
-                    f"{driver.get('givenName', '')} {driver.get('familyName', '')}".strip()
-                    or driver.get("driverId", "—")
-                )
+                name = driver_display_name(driver)
                 prefix = (
                     str(row.get("positionText") or row.get("position") or "—"),
                     name,
@@ -641,7 +658,7 @@ class F1Client:
                     detail = ()
                 else:
                     driver = row["Driver"]
-                    name = f"{driver['givenName']} {driver['familyName']}"
+                    name = driver_display_name(driver)
                     detail = (
                         " / ".join(c["name"] for c in row.get("Constructors", []))
                         or "—",

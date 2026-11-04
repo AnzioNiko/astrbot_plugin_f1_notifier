@@ -692,3 +692,16 @@ async def test_driver_headshots_surname_fallback_finds_middle_name_variant(
 
     assert lookup["antonelli"].endswith("/antonelli.png")
     assert lookup["kimiantonelli"].endswith("/antonelli.png")
+
+
+def test_driver_display_name_shortens_antonelli():
+    assert (
+        api.driver_display_name(
+            {
+                "driverId": "antonelli",
+                "givenName": "Andrea Kimi",
+                "familyName": "Antonelli",
+            }
+        )
+        == "Kimi Antonelli"
+    )
