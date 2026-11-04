@@ -131,3 +131,5 @@ class Table:
     footer: str = ""
     circuit_id: str = ""
     row_avatars: tuple[tuple[str | None, ...], ...] = ()
+    layout: str = "table"
+    rank_kind: str = ""

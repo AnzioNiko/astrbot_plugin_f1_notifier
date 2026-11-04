@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.1f] - 2026-11-04
+
+- Restore the 1.x ranked-card presentation for race, qualifying, sprint, practice, starting-grid, driver-standings, and constructor-standings images while retaining the 2.x data sources and delivery pipeline.
+- Use one Orbitron font for every driver name, widen timing columns for full race durations, render constructor names in muted gray, and use Chinese titles for every ranked-card type while preserving dynamic race names.
+- Remove the UTC offset column from schedule and next-race cards, and emphasize the hour and minute portions of displayed timestamps.
+
 ## [2.1.1] - 2026-11-01
 
 - Add administrator-only `/f1 subs`, `/f1 subs add <UMO>`, and `/f1 subs remove <UMO>` to list, create, and remove subscriptions for any group or private conversation without operating inside it.

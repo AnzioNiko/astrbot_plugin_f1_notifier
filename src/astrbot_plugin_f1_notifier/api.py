@@ -531,12 +531,14 @@ class F1Client:
                 else ("名次", "车手", "车队", "圈数", "用时 / 状态", "积分")
             )
             return Table(
-                f"{SESSION_NAMES[kind]}结果",
-                f"{race.season} 第 {race.round} 站 · {race.name}",
-                columns,
-                tuple(output),
-                "数据来源：Jolpica-F1 · 以官方最终分类为准",
-                race.circuit_id,
+                title=f"{SESSION_NAMES[kind]}结果",
+                subtitle=f"{race.season} 第 {race.round} 站 · {race.name}",
+                columns=columns,
+                rows=tuple(output),
+                footer="数据来源：Jolpica-F1 · 以官方最终分类为准",
+                circuit_id=race.circuit_id,
+                layout="ranking",
+                rank_kind=kind,
             )
         except (KeyError, TypeError, AttributeError) as exc:
             raise DataError("比赛结果格式异常，请稍后重试。") from exc
@@ -616,13 +618,15 @@ class F1Client:
             output.append(values)
         title = "正赛发车顺序" if kind == "grid" else f"{SESSION_NAMES[kind]}结果"
         return Table(
-            title,
-            f"{race.season} 第 {race.round} 站 · {race.name}",
-            ("名次", "车手", "车队", "圈速 / 状态")
+            title=title,
+            subtitle=f"{race.season} 第 {race.round} 站 · {race.name}",
+            columns=("名次", "车手", "车队", "圈速 / 状态")
             + (() if kind == "grid" else ("差距", "圈数")),
-            tuple(output),
-            "数据来源：OpenF1 · 数据可能延迟发布",
-            race.circuit_id,
+            rows=tuple(output),
+            footer="数据来源：OpenF1 · 数据可能延迟发布",
+            circuit_id=race.circuit_id,
+            layout="ranking",
+            rank_kind=kind,
         )
 
     async def standings(
@@ -677,11 +681,13 @@ class F1Client:
             )
             return (
                 Table(
-                    "车队积分榜" if teams else "车手积分榜",
-                    f"{season} 赛季 · 第 {standing.get('round', '—')} 站后",
-                    columns,
-                    tuple(output),
-                    "数据来源：Jolpica-F1",
+                    title="车队积分榜" if teams else "车手积分榜",
+                    subtitle=f"{season} 赛季 · 第 {standing.get('round', '—')} 站后",
+                    columns=columns,
+                    rows=tuple(output),
+                    footer="数据来源：Jolpica-F1",
+                    layout="ranking",
+                    rank_kind="standings_teams" if teams else "standings_drivers",
                 )
                 if output
                 else None

@@ -66,14 +66,11 @@ def schedule_table(races: list[Race], timezone: str = "Asia/Shanghai") -> Table:
         sessions = sorted(race.sessions, key=lambda session: session.start)
         for session in sessions:
             start = session.start.astimezone(zone)
-            offset = start.strftime("%z")
-            offset_label = f"UTC{offset[:3]}:{offset[3:]}"
             rows.append(
                 (
                     start.strftime("%Y-%m-%d %H:%M"),
                     f"第{race.round}站 · {race.name}",
                     SESSION_LABELS.get(session.key, session.key),
-                    offset_label,
                 )
             )
             session_count += 1
@@ -82,7 +79,7 @@ def schedule_table(races: list[Race], timezone: str = "Asia/Shanghai") -> Table:
     return Table(
         title=f"F1 {season_label} 赛季赛程",
         subtitle=f"时区：{timezone}",
-        columns=("开始时间", "分站", "赛段", "UTC 偏移"),
+        columns=("开始时间", "分站", "赛段"),
         rows=tuple(rows),
         footer=f"共 {len(races)} 场比赛 · {session_count} 个赛段",
     )
@@ -107,8 +104,6 @@ def weekend_table(race: Race, timezone: str = "Asia/Shanghai") -> Table:
 
     for session in sessions:
         start = session.start.astimezone(zone)
-        offset = start.strftime("%z")
-        offset_label = f"UTC{offset[:3]}:{offset[3:]}"
         if session.end is None:
             end_label = "—"
         else:
@@ -119,14 +114,13 @@ def weekend_table(race: Race, timezone: str = "Asia/Shanghai") -> Table:
                 start.strftime("%Y-%m-%d %H:%M"),
                 SESSION_LABELS.get(session.key, session.key),
                 end_label,
-                offset_label,
             )
         )
 
     return Table(
         title=f"F1 第{race.round}站 · {race.name}",
         subtitle=f"{race.country} · {race.circuit_name} · 时区：{timezone}",
-        columns=("开始时间", "赛段", "结束时间", "UTC 偏移"),
+        columns=("开始时间", "赛段", "结束时间"),
         rows=tuple(rows),
         footer="赛程可能调整，请以赛事官方公告为准",
         circuit_id=race.circuit_id,

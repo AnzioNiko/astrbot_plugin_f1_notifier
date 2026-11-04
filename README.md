@@ -101,7 +101,7 @@ AstrBot 管理员可远程查看和管理全部订阅，无需在目标会话内
 git clone https://github.com/MareDevi/astrbot_plugin_f1_notifier data/plugins/astrbot_plugin_f1_notifier
 ```
 
-第三方 Python 依赖声明在 `requirements.txt`，由 AstrBot 插件管理器安装。图片使用 Pillow；已有赛道 SVG 可以通过 CairoSVG 渲染。缺少 Cairo 原生库或赛道素材时，卡片仍可输出，不会生成虚构赛道。中文字体优先使用系统字体，建议 Linux 安装 Noto Sans CJK。时区数据库由 `tzdata` 提供，兼容 Windows。
+第三方 Python 依赖声明在 `requirements.txt`，由 AstrBot 插件管理器安装。图片使用 Pillow；已有赛道 SVG 可以通过 CairoSVG 渲染。缺少 Cairo 原生库或赛道素材时，卡片仍可输出，不会生成虚构赛道。比赛结果、发车顺序和积分榜使用 1.x 行卡样式；赛程与下一站时间表不显示 UTC 偏移，并将时、分数字高亮显示。中文字体优先使用系统字体，建议 Linux 安装 Noto Sans CJK。时区数据库由 `tzdata` 提供，兼容 Windows。
 
 修改代码或配置后，在 WebUI 的插件页重载插件。开发方式遵循 [AstrBot 插件开发指南](https://docs.astrbot.app/dev/star/plugin-new.html)。
 

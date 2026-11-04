@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from src.astrbot_plugin_f1_notifier import image_renderer as image_renderer_module
 from src.astrbot_plugin_f1_notifier.formatter import (
     format_table,
     schedule_table,
@@ -68,7 +69,7 @@ def test_schedule_table_converts_every_session_to_requested_timezone() -> None:
     table = schedule_table([_sprint_race()], timezone="Asia/Shanghai")
 
     assert table.subtitle == "时区：Asia/Shanghai"
-    assert table.columns == ("开始时间", "分站", "赛段", "UTC 偏移")
+    assert table.columns == ("开始时间", "分站", "赛段")
     assert len(table.rows) == 7
     assert [row[2] for row in table.rows] == [
         "练习赛 FP1",
@@ -88,10 +89,10 @@ def test_schedule_table_converts_every_session_to_requested_timezone() -> None:
         "2025-03-15 15:00",
         "2025-03-16 12:00",
     ]
-    assert {row[3] for row in table.rows} == {"UTC+08:00"}
+    assert all("UTC" not in " ".join(row) for row in table.rows)
 
 
-def test_weekend_table_labels_dst_offset_and_preserves_circuit() -> None:
+def test_weekend_table_preserves_local_time_and_circuit() -> None:
     utc = timezone.utc
     race = Race(
         season=2025,
@@ -114,12 +115,12 @@ def test_weekend_table_labels_dst_offset_and_preserves_circuit() -> None:
     assert table.title == "F1 第2站 · 迈阿密大奖赛"
     assert "America/New_York" in table.subtitle
     assert table.circuit_id == "miami"
+    assert table.columns == ("开始时间", "赛段", "结束时间")
     assert table.rows == (
         (
             "2025-05-04 16:00",
             "正赛",
             "2025-05-04 18:00",
-            "UTC-04:00",
         ),
     )
 
@@ -189,6 +190,15 @@ def test_rank_table_detection_is_available_for_podium_styles() -> None:
     assert not ImageRenderer._is_rank_table((("2026-11-06", "练习赛 FP1"),))
 
 
+def test_time_segments_isolate_only_the_hour() -> None:
+    assert ImageRenderer._time_segments("2026-11-06 23:30") == (
+        "2026-11-06 ",
+        "23",
+        ":30",
+    )
+    assert ImageRenderer._time_segments("正赛") is None
+
+
 def test_driver_headshot_is_drawn_before_ranked_driver_name(
     tmp_path: Path,
 ) -> None:
@@ -201,6 +211,8 @@ def test_driver_headshot_is_drawn_before_ranked_driver_name(
         ("名次", "车手", "车队", "积分"),
         (("1", "Max Verstappen", "Red Bull", "25"),),
         row_avatars=((None, url, None, None),),
+        layout="ranking",
+        rank_kind="race",
     )
 
     without = renderer._draw_card(table, {})
@@ -208,6 +220,62 @@ def test_driver_headshot_is_drawn_before_ranked_driver_name(
 
     assert with_headshot.size == without.size
     assert with_headshot.tobytes() != without.tobytes()
+    assert with_headshot.width == 1120
+    assert with_headshot.height > 300
+
+
+def test_ranking_layout_uses_legacy_team_rows(tmp_path: Path) -> None:
+    renderer = ImageRenderer(tmp_path)
+    table = Table(
+        "车队积分榜",
+        "2026 赛季 · 第 19 站后",
+        ("名次", "车队", "积分", "胜场"),
+        (("1", "McLaren", "730", "12"), ("2", "Ferrari", "620", "5")),
+        layout="ranking",
+        rank_kind="standings_teams",
+    )
+
+    image = renderer._draw_card(table, {})
+
+    assert image.width == 1120
+    assert image.height > 400
+    assert image.tobytes() != Image.new("RGB", image.size, "black").tobytes()
+
+
+def test_ranking_titles_are_chinese() -> None:
+    assert image_renderer_module._RANKING_TITLES == {
+        "race": "正赛成绩",
+        "qualifying": "排位赛成绩",
+        "sprint": "冲刺赛成绩",
+        "sprint_qualifying": "冲刺排位赛成绩",
+        "practice1": "练习赛 FP1",
+        "practice2": "练习赛 FP2",
+        "practice3": "练习赛 FP3",
+        "grid": "发车顺序",
+        "standings_drivers": "车手积分榜",
+        "standings_teams": "车队积分榜",
+    }
+
+
+def test_ranking_layout_supports_thirty_driver_rows(tmp_path: Path) -> None:
+    renderer = ImageRenderer(tmp_path)
+    rows = tuple(
+        (str(index), f"Driver {index}", "Test Team", str(31 - index), "0")
+        for index in range(1, 31)
+    )
+    table = Table(
+        "车手积分榜",
+        "2026 赛季",
+        ("名次", "车手", "车队", "积分", "胜场"),
+        rows,
+        layout="ranking",
+        rank_kind="standings_drivers",
+    )
+
+    image = renderer._draw_card(table, {})
+
+    assert image.width == 1120
+    assert image.height > 4000
 
 
 async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> None:
@@ -223,13 +291,13 @@ async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> No
     table = Table(
         title="F1 冲刺周末时间表",
         subtitle="中国大奖赛 · Asia/Shanghai",
-        columns=("开始时间", "赛段", "UTC 偏移"),
+        columns=("开始时间", "赛段"),
         rows=(
-            ("03-14 09:30", "练习赛 FP1", "UTC+08:00"),
-            ("03-14 13:30", "练习赛 FP2", "UTC+08:00"),
-            ("03-14 15:30", "冲刺排位赛", "UTC+08:00"),
-            ("03-15 12:00", "冲刺赛", "UTC+08:00"),
-            ("03-16 12:00", "正赛", "UTC+08:00"),
+            ("03-14 09:30", "练习赛 FP1"),
+            ("03-14 13:30", "练习赛 FP2"),
+            ("03-14 15:30", "冲刺排位赛"),
+            ("03-15 12:00", "冲刺赛"),
+            ("03-16 12:00", "正赛"),
         ),
         footer="赛程可能调整，请以赛事官方公告为准",
         circuit_id="shanghai",

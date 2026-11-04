@@ -22,7 +22,7 @@ except (ImportError, OSError):
 
 from .models import Table
 
-_LAYOUT_VERSION = "f1-card-v2-personal-5"
+_LAYOUT_VERSION = "f1-card-v2-ranking-legacy-1"
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _ASSETS_DIR = _PLUGIN_ROOT / "assets"
 _FONTS_DIR = _ASSETS_DIR / "fonts"
@@ -41,6 +41,37 @@ _DEFAULT_TITLE_FONT_SIZE = 41
 _MIN_TITLE_FONT_SIZE = 18
 _MAX_TITLE_FONT_SIZE = 80
 _CACHE_PREFIX = "f1-card-"
+_TEAM_COLOURS = MappingProxyType(
+    {
+        "red bull": (54, 113, 198),
+        "ferrari": (232, 0, 45),
+        "mclaren": (255, 128, 0),
+        "mercedes": (39, 244, 210),
+        "aston martin": (34, 153, 113),
+        "alpine": (0, 147, 204),
+        "williams": (100, 196, 255),
+        "racing bulls": (102, 146, 255),
+        "rb": (102, 146, 255),
+        "haas": (182, 186, 189),
+        "sauber": (82, 226, 82),
+        "audi": (255, 0, 0),
+        "cadillac": (144, 144, 144),
+    }
+)
+_RANKING_TITLES = MappingProxyType(
+    {
+        "race": "正赛成绩",
+        "qualifying": "排位赛成绩",
+        "sprint": "冲刺赛成绩",
+        "sprint_qualifying": "冲刺排位赛成绩",
+        "practice1": "练习赛 FP1",
+        "practice2": "练习赛 FP2",
+        "practice3": "练习赛 FP3",
+        "grid": "发车顺序",
+        "standings_drivers": "车手积分榜",
+        "standings_teams": "车队积分榜",
+    }
+)
 _CIRCUIT_SVG_MAP = MappingProxyType(
     {
         "albert_park": "melbourne",
@@ -306,6 +337,27 @@ class ImageRenderer:
     def _is_rank_table(rows: tuple[tuple[str, ...], ...]) -> bool:
         return bool(rows) and all(row[0].strip().isdigit() for row in rows)
 
+    @staticmethod
+    def _is_ranking_table(table: Table) -> bool:
+        """Return whether a table requests the legacy ranking-card layout."""
+        return table.layout == "ranking" and bool(table.rows)
+
+    @staticmethod
+    def _time_segments(value: str) -> tuple[str, str, str] | None:
+        """Split ``YYYY-MM-DD HH:MM`` into date, hour, and minute parts."""
+        prefix, separator, clock = value.rpartition(" ")
+        if not separator or ":" not in clock:
+            return None
+        hour, colon, minute = clock.partition(":")
+        if (
+            not hour.isdigit()
+            or not minute.isdigit()
+            or len(hour) not in (1, 2)
+            or len(minute) != 2
+        ):
+            return None
+        return f"{prefix} ", hour, f"{colon}{minute}"
+
     async def render(self, table: Table) -> Path:
         """Render a table to a PNG card.
 
@@ -569,6 +621,8 @@ class ImageRenderer:
             "\x1c".join(
                 "\x1f".join(url or "" for url in row) for row in table.row_avatars
             ),
+            table.layout,
+            table.rank_kind,
             str(self.card_width),
             str(self.body_font_size),
             str(self.subtitle_font_size),
@@ -650,6 +704,395 @@ class ImageRenderer:
         self._prune_cache(output_path)
         return output_path
 
+    def _ranking_scale(self) -> float:
+        """Return the scale from the original 1120px ranking artwork."""
+        return self.card_width / 1120
+
+    def _r(self, value: float) -> int:
+        """Scale one legacy ranking-card dimension."""
+        return max(1, round(value * self._ranking_scale()))
+
+    @staticmethod
+    def _team_colour(constructor_name: str) -> tuple[int, int, int]:
+        """Resolve a constructor name to the 1.x team accent colour."""
+        name = constructor_name.casefold()
+        for key, colour in _TEAM_COLOURS.items():
+            if key in name:
+                return colour
+        return (255, 255, 255)
+
+    @staticmethod
+    def _driver_acronym(name: str) -> str:
+        """Derive the three-letter fallback used when no portrait is available."""
+        words = str(name).split()
+        source = words[-1] if words else str(name)
+        return source[:3].upper() or "F1"
+
+    def _ranking_stat_specs(self, table: Table) -> list[tuple[str, int]]:
+        """Map the new table's Chinese columns to the 1.x English stat labels."""
+        indexes = {name: index for index, name in enumerate(table.columns)}
+        preferred = (
+            ("胜场", "WINS"),
+            ("积分", "POINTS"),
+        ) if table.rank_kind.startswith("standings") else (
+            ("用时 / 状态", "TIME"),
+            ("圈数", "LAPS"),
+            ("积分", "PTS"),
+            ("圈速 / 状态", "BEST LAP"),
+            ("差距", "GAP"),
+            ("Q1", "Q1"),
+            ("Q2", "Q2"),
+            ("Q3", "Q3"),
+        )
+        return [
+            (label, indexes[column])
+            for column, label in preferred
+            if column in indexes
+        ]
+
+    def _draw_time_value(
+        self,
+        draw: ImageDraw.ImageDraw,
+        position: tuple[float, float],
+        value: str,
+        font: ImageFont.ImageFont,
+        hour_font: ImageFont.ImageFont,
+        max_width: float,
+        base_fill: str,
+        hour_fill: str = "#FF3B30",
+    ) -> None:
+        """Draw a timestamp with its hour and minute visually emphasized."""
+        parts = self._time_segments(value)
+        if parts is None:
+            draw.text(
+                position,
+                self._ellipsize(value, font, max_width),
+                font=font,
+                fill=base_fill,
+            )
+            return
+
+        prefix, hour, suffix = parts
+        measure = ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength
+        total_width = (
+            measure(prefix, font=font)
+            + measure(hour, font=hour_font)
+            + measure(suffix, font=font)
+        )
+        if total_width > max_width:
+            draw.text(
+                position,
+                self._ellipsize(value, font, max_width),
+                font=font,
+                fill=base_fill,
+            )
+            return
+
+        x, y = position
+        draw.text((x, y), prefix, font=font, fill=base_fill)
+        x += measure(prefix, font=font)
+        draw.text((x, y), hour, font=hour_font, fill=hour_fill)
+        x += measure(hour, font=hour_font)
+        draw.text((x, y), suffix, font=font, fill=hour_fill)
+
+    def _f1_logo(self, size: tuple[int, int]) -> Image.Image | None:
+        """Render the bundled F1 logo at the requested size."""
+        if cairosvg is None:
+            return None
+        output = io.BytesIO()
+        try:
+            cairosvg.svg2png(
+                url=str(_ASSETS_DIR / "f1.svg"),
+                write_to=output,
+                output_width=size[0],
+                output_height=size[1],
+            )
+            output.seek(0)
+            with Image.open(output) as source:
+                return source.convert("RGBA")
+        except Exception:
+            return None
+
+    def _draw_ranking_card(
+        self,
+        table: Table,
+        headshots: Mapping[str, Image.Image],
+    ) -> Image.Image:
+        """Draw the legacy 1.x ranked-driver and standings card style."""
+        width = self.card_width
+        column_count = max(
+            len(table.columns),
+            max((len(row) for row in table.rows), default=0),
+            1,
+        )
+        columns = tuple(table.columns) + ("",) * (column_count - len(table.columns))
+        rows = tuple(
+            tuple(row) + ("",) * (column_count - len(row)) for row in table.rows
+        )
+        avatar_rows = [
+            list(row) + [None] * (column_count - len(row)) for row in table.row_avatars
+        ]
+        while len(avatar_rows) < len(rows):
+            avatar_rows.append([None] * column_count)
+
+        header_height = self._r(184)
+        row_height = self._r(132)
+        row_gap = self._r(10)
+        footer_height = self._r(84)
+        margin_x = self._r(20)
+        card_height = (
+            header_height
+            + self._r(16)
+            + len(rows) * (row_height + row_gap)
+            + footer_height
+        )
+        image = Image.new("RGBA", (width, card_height), (21, 21, 30, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, header_height, width, card_height), fill=(26, 26, 46, 255))
+        draw.rectangle((0, 0, width, header_height), fill=(225, 6, 0, 255))
+
+        circuit = self._circuit_graphic(
+            table.circuit_id, (self._r(112), self._r(112))
+        )
+        if circuit is not None:
+            alpha = circuit.getchannel("A").point(lambda value: int(value * 0.3))
+            circuit.putalpha(alpha)
+            image.paste(
+                circuit,
+                (width - self._r(470), (header_height - circuit.height) // 2),
+                circuit,
+            )
+        logo = self._f1_logo((self._r(180), self._r(112)))
+        if logo is not None:
+            image.paste(
+                logo,
+                (
+                    width - self._r(156) - logo.width,
+                    (header_height - logo.height) // 2,
+                ),
+                logo,
+            )
+
+        subtitle_font = self._load_font(self._r(28))
+        title = _RANKING_TITLES.get(table.rank_kind, table.title.upper())
+        title_font = (
+            self._load_latin_font(self._r(45), bold=True)
+            if title.isascii()
+            else self._load_font(self._r(45), bold=True)
+        )
+        title = self._ellipsize(title, title_font, width - self._r(400))
+        draw.text((self._r(56), self._r(34)), title, font=title_font, fill="white")
+        if table.subtitle:
+            subtitle = self._ellipsize(
+                table.subtitle.upper(),
+                subtitle_font,
+                width - self._r(400),
+            )
+            draw.text(
+                (self._r(56), self._r(96)),
+                subtitle,
+                font=subtitle_font,
+                fill=(255, 255, 255, 220),
+            )
+
+        position_font = self._load_latin_font(self._r(44), bold=True)
+        latin_name_font = self._load_latin_font(self._r(32), bold=True)
+        team_font = self._load_font(self._r(25))
+        latin_team_font = self._load_latin_font(self._r(25))
+        acronym_font = self._load_latin_font(self._r(27), bold=True)
+        stat_label_font = self._load_latin_font(self._r(20), bold=True)
+        stat_value_font = self._load_latin_font(self._r(30), bold=True)
+        stat_value_cjk_font = self._load_font(self._r(30), bold=True)
+        measure = ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength
+
+        driver_column = columns.index("车手") if "车手" in columns else None
+        team_column = columns.index("车队") if "车队" in columns else None
+        is_team_table = table.rank_kind == "standings_teams"
+        stat_specs = self._ranking_stat_specs(table)
+        stat_widths = [
+            min(
+                max(
+                    measure(label, font=stat_label_font),
+                    max(
+                        measure(
+                            row[column],
+                            font=(
+                                stat_value_font
+                                if row[column].isascii()
+                                else stat_value_cjk_font
+                            ),
+                        )
+                        for row in rows
+                    ),
+                )
+                + self._r(18),
+                self._r(250 if label in ("TIME", "BEST LAP") else 180),
+            )
+            for label, column in stat_specs
+        ]
+        stats_right = width - margin_x - self._r(32)
+        stats_left = stats_right - sum(stat_widths) - self._r(16) * max(
+            0, len(stat_specs) - 1
+        )
+
+        y = header_height + self._r(16)
+        for row_index, row in enumerate(rows):
+            try:
+                position = int(row[0])
+            except ValueError:
+                position = 99
+            if position == 1:
+                row_fill = (255, 215, 0, 25)
+                position_fill = (255, 215, 0)
+            elif position == 2:
+                row_fill = (192, 192, 192, 20)
+                position_fill = (192, 192, 192)
+            elif position == 3:
+                row_fill = (205, 127, 50, 20)
+                position_fill = (205, 127, 50)
+            else:
+                row_fill = (255, 255, 255, 15 if position % 2 == 0 else 10)
+                position_fill = (255, 255, 255)
+
+            overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            ImageDraw.Draw(overlay).rounded_rectangle(
+                (margin_x, y, width - margin_x, y + row_height),
+                radius=self._r(20),
+                fill=row_fill,
+            )
+            image.alpha_composite(overlay)
+
+            if is_team_table and team_column is not None:
+                display_name = row[team_column]
+                team_name = ""
+            elif driver_column is not None:
+                display_name = row[driver_column]
+                team_name = row[team_column] if team_column is not None else ""
+            else:
+                display_name = row[1] if column_count > 1 else row[0]
+                team_name = row[2] if column_count > 2 else ""
+            team_colour = self._team_colour(team_name or display_name)
+            draw.rectangle(
+                (
+                    margin_x,
+                    y + self._r(12),
+                    margin_x + self._r(8),
+                    y + row_height - self._r(12),
+                ),
+                fill=team_colour,
+            )
+            draw.text(
+                (margin_x + self._r(32), y + self._r(40)),
+                str(position) if position != 99 else row[0],
+                font=position_font,
+                fill=position_fill,
+            )
+
+            if is_team_table:
+                name_x = margin_x + self._r(112)
+            else:
+                avatar_url = (
+                    avatar_rows[row_index][driver_column]
+                    if driver_column is not None
+                    else None
+                )
+                avatar_size = self._r(64)
+                circle_x = margin_x + self._r(120)
+                circle_y = y + (row_height - avatar_size) // 2
+                draw.ellipse(
+                    (
+                        circle_x,
+                        circle_y,
+                        circle_x + avatar_size,
+                        circle_y + avatar_size,
+                    ),
+                    outline=team_colour,
+                    width=self._r(4),
+                )
+                raw_headshot = headshots.get(avatar_url) if avatar_url else None
+                if raw_headshot is not None:
+                    headshot = self._make_circular(
+                        raw_headshot, avatar_size - self._r(8)
+                    )
+                    image.paste(
+                        headshot,
+                        (circle_x + self._r(4), circle_y + self._r(4)),
+                        headshot,
+                    )
+                    headshot.close()
+                else:
+                    acronym = self._driver_acronym(display_name)
+                    acronym_width = measure(acronym, font=acronym_font)
+                    draw.text(
+                        (
+                            circle_x + (avatar_size - acronym_width) / 2,
+                            y + (row_height - self._r(27)) / 2,
+                        ),
+                        acronym,
+                        font=acronym_font,
+                        fill="white",
+                    )
+                name_x = circle_x + avatar_size + self._r(24)
+
+            name_max_width = stats_left - name_x - self._r(16)
+            draw.text(
+                (name_x, y + self._r(16)),
+                self._ellipsize(display_name, latin_name_font, name_max_width),
+                font=latin_name_font,
+                fill="white",
+            )
+            if team_name:
+                team_font_for_row = latin_team_font if team_name.isascii() else team_font
+                draw.text(
+                    (name_x, y + self._r(56)),
+                    self._ellipsize(team_name, team_font_for_row, name_max_width),
+                    font=team_font_for_row,
+                    fill=(150, 150, 155),
+                )
+
+            stat_x = stats_right
+            for stat_index in range(len(stat_specs) - 1, -1, -1):
+                label, column = stat_specs[stat_index]
+                column_width = stat_widths[stat_index]
+                value = row[column]
+                value_font = (
+                    stat_value_font if value.isascii() else stat_value_cjk_font
+                )
+                draw.text(
+                    (stat_x - column_width, y + self._r(16)),
+                    label,
+                    font=stat_label_font,
+                    fill=(150, 150, 155),
+                )
+                value_fill = (
+                    (225, 6, 0)
+                    if label in ("PTS", "POINTS") and position <= 3
+                    else (255, 255, 255)
+                )
+                draw.text(
+                    (stat_x - column_width, y + self._r(48)),
+                    self._ellipsize(value, value_font, column_width),
+                    font=value_font,
+                    fill=value_fill,
+                )
+                stat_x -= column_width + self._r(16)
+            y += row_height + row_gap
+
+        footer_font = self._load_font(self._r(20))
+        footer = self._ellipsize(
+            table.footer or "F1 NOTIFIER · POWERED BY ASTRBOT",
+            footer_font,
+            width - self._r(48),
+        )
+        footer_width = measure(footer, font=footer_font)
+        draw.text(
+            ((width - footer_width) / 2, card_height - footer_height + self._r(22)),
+            footer,
+            font=footer_font,
+            fill=(255, 255, 255, 80),
+        )
+        return image.convert("RGB")
+
     def _draw_card(
         self,
         table: Table,
@@ -663,6 +1106,9 @@ class ImageRenderer:
         Returns:
             A RGB card image using the configured width and font sizes.
         """
+        if self._is_ranking_table(table):
+            return self._draw_ranking_card(table, headshots)
+
         width = self.card_width
         margin = self._s(_MARGIN)
         table_width = width - margin * 2
@@ -975,15 +1421,28 @@ class ImageRenderer:
                         line_x = x + (widths[column_index] - line_width) / 2
                     elif align == "right":
                         line_x = x + widths[column_index] - line_width - self._s(18)
-                    draw.text(
-                        (
-                            line_x,
-                            y + self._t(16) + line_index * line_height,
-                        ),
-                        line,
-                        font=draw_font,
-                        fill=text_color,
-                    )
+                    line_y = y + self._t(16) + line_index * line_height
+                    if (
+                        align == "left"
+                        and "时间" in columns[column_index]
+                        and len(lines) == 1
+                    ):
+                        self._draw_time_value(
+                            draw,
+                            (line_x, line_y),
+                            line,
+                            draw_font,
+                            latin_bold,
+                            widths[column_index] - line_x_offset - self._s(18),
+                            text_color,
+                        )
+                    else:
+                        draw.text(
+                            (line_x, line_y),
+                            line,
+                            font=draw_font,
+                            fill=text_color,
+                        )
                 x += widths[column_index]
             draw.line(
                 (

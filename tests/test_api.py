@@ -566,6 +566,8 @@ async def test_race_and_sprint_preserve_completed_laps(client, server, kind, fie
     table = await client.results(race, kind)
     assert "圈数" in table.columns
     assert table.rows[0][table.columns.index("圈数")] == "57"
+    assert table.layout == "ranking"
+    assert table.rank_kind == kind
 
 
 @pytest.mark.parametrize(
@@ -649,6 +651,8 @@ async def test_standings_limit_truncates_driver_rows(client, monkeypatch):
     assert table is not None
     assert len(table.rows) == 2
     assert table.rows[0][1] == "Driver1 Test"
+    assert table.layout == "ranking"
+    assert table.rank_kind == "standings_drivers"
 
 
 async def test_driver_headshots_match_normalized_driver_names(client, monkeypatch):
