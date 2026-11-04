@@ -675,7 +675,6 @@ class ImageRenderer:
         subtitle_font = self._load_font(self._subtitle_font_size(19))
         footer_font = self._load_font(self._font_size(16))
         micro_font = self._load_latin_font(self._font_size(12), bold=True)
-        row_index_font = self._load_latin_font(self._font_size(14), bold=True)
         title_y = self._t(34)
         subtitle_y = title_y + self.title_font_size + self._t(20)
         micro_y = subtitle_y + self.subtitle_font_size + self._t(14)
@@ -704,8 +703,7 @@ class ImageRenderer:
         )
 
         measure = ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength
-        index_width = 0 if rank_table else self._s(54)
-        usable_width = table_width - index_width
+        usable_width = table_width
         natural_widths = []
         for index, heading in enumerate(columns):
             cells = [heading, *(row[index] for row in normalized_rows)]
@@ -901,14 +899,7 @@ class ImageRenderer:
             (0, header_top, width, header_top + column_header_height),
             fill=red,
         )
-        if not rank_table:
-            draw.text(
-                (margin, header_top + self._s(17)),
-                "NO.",
-                font=micro_font,
-                fill=white,
-            )
-        x = margin + index_width
+        x = margin
         for index, heading in enumerate(columns):
             label = self._ellipsize(
                 heading.upper(), header_font, widths[index] - self._s(20)
@@ -934,15 +925,7 @@ class ImageRenderer:
             background = "#080808" if row_index % 2 == 0 else "#101010"
             draw.rectangle((0, y, width, y + row_height), fill=background)
             draw.rectangle((0, y, self._s(6), y + row_height), fill=accent)
-            if not rank_table:
-                draw.text(
-                    (margin, y + self._t(18)),
-                    f"{row_index + 1:02d}",
-                    font=row_index_font,
-                    fill=muted if not (is_race or is_podium) else red,
-                )
-
-            x = margin + index_width
+            x = margin
             for column_index, lines in enumerate(wrapped_row):
                 text_color = white
                 if cells[column_index].strip().upper() in session_labels:

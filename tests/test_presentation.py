@@ -184,7 +184,7 @@ def test_subtitle_width_reserves_room_for_circuit_graphic(tmp_path: Path) -> Non
     assert subtitle_width <= title_width - 100
 
 
-def test_rank_table_omits_redundant_row_number_column() -> None:
+def test_rank_table_detection_is_available_for_podium_styles() -> None:
     assert ImageRenderer._is_rank_table((("1", "车手 A"), ("2", "车手 B")))
     assert not ImageRenderer._is_rank_table((("2026-11-06", "练习赛 FP1"),))
 
