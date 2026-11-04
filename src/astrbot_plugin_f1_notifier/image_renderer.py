@@ -20,7 +20,7 @@ except (ImportError, OSError):
 
 from .models import Table
 
-_LAYOUT_VERSION = "f1-card-v2-personal-2"
+_LAYOUT_VERSION = "f1-card-v2-personal-3"
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _ASSETS_DIR = _PLUGIN_ROOT / "assets"
 _FONTS_DIR = _ASSETS_DIR / "fonts"
@@ -32,6 +32,9 @@ _MAX_CARD_WIDTH = 1600
 _DEFAULT_FONT_SCALE_PERCENT = 125
 _MIN_FONT_SCALE_PERCENT = 100
 _MAX_FONT_SCALE_PERCENT = 140
+_DEFAULT_TITLE_SCALE_PERCENT = 80
+_MIN_TITLE_SCALE_PERCENT = 60
+_MAX_TITLE_SCALE_PERCENT = 120
 _CACHE_PREFIX = "f1-card-"
 _CIRCUIT_SVG_MAP = MappingProxyType(
     {
@@ -106,6 +109,7 @@ class ImageRenderer:
         max_count: Maximum number of generated cards to retain.
         card_width: Output card width in pixels.
         font_scale_percent: Relative text size percentage.
+        title_scale_percent: Additional title-only size percentage.
     """
 
     def __init__(
@@ -115,6 +119,7 @@ class ImageRenderer:
         max_count: int = 50,
         card_width: int = _DEFAULT_CARD_WIDTH,
         font_scale_percent: int = _DEFAULT_FONT_SCALE_PERCENT,
+        title_scale_percent: int = _DEFAULT_TITLE_SCALE_PERCENT,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.max_age_minutes = max(0, int(max_age_minutes))
@@ -124,8 +129,13 @@ class ImageRenderer:
             max(int(font_scale_percent), _MIN_FONT_SCALE_PERCENT),
             _MAX_FONT_SCALE_PERCENT,
         )
+        self.title_scale_percent = min(
+            max(int(title_scale_percent), _MIN_TITLE_SCALE_PERCENT),
+            _MAX_TITLE_SCALE_PERCENT,
+        )
         self._layout_scale = self.card_width / _CARD_WIDTH
         self._font_scale = self.font_scale_percent / 100
+        self._title_scale = self.title_scale_percent / 100
         self._semaphore = asyncio.Semaphore(1)
         self._state_lock = asyncio.Lock()
         self._workers: dict[asyncio.Task[Path], asyncio.Event] = {}
@@ -144,6 +154,10 @@ class ImageRenderer:
     def _font_size(self, value: int) -> int:
         """Return a configured pixel size for a text element."""
         return self._t(value)
+
+    def _title_font_size(self, value: int) -> int:
+        """Return the title-only font size after all scale settings."""
+        return max(1, round(self._t(value) * self._title_scale))
 
     async def render(self, table: Table) -> Path:
         """Render a table to a PNG card.
@@ -395,6 +409,7 @@ class ImageRenderer:
             table.circuit_id,
             str(self.card_width),
             str(self.font_scale_percent),
+            str(self.title_scale_percent),
         ]
         digest = hashlib.sha256("\x1d".join(parts).encode("utf-8")).hexdigest()[:24]
         return self.data_dir / f"{_CACHE_PREFIX}{digest}.png"
@@ -485,7 +500,7 @@ class ImageRenderer:
         latin_regular = self._load_latin_font(self._font_size(17))
         latin_bold = self._load_latin_font(self._font_size(18), bold=True)
         header_font = self._load_font(self._font_size(16), bold=True)
-        title_font = self._load_font(self._font_size(44), bold=True)
+        title_font = self._load_font(self._title_font_size(44), bold=True)
         subtitle_font = self._load_font(self._font_size(19))
         footer_font = self._load_font(self._font_size(16))
         micro_font = self._load_latin_font(self._font_size(12), bold=True)

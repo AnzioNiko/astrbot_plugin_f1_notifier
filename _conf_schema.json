@@ -27,6 +27,17 @@
     "hint": "个人版默认 125%。统一调整卡片文字，并同步调整行高和卡片高度。保存后重载插件生效。",
     "default": 125
   },
+  "image_title_font_scale_percent": {
+    "description": "标题文字字号比例（%）",
+    "type": "int",
+    "slider": {
+      "min": 60,
+      "max": 120,
+      "step": 5
+    },
+    "hint": "在整体字号基础上单独调整卡片标题，默认 80%。不会改变表格正文和其他文字大小。保存后重载插件生效。",
+    "default": 80
+  },
   "timezone": {
     "description": "显示与周末赛程推送时区",
     "type": "string",

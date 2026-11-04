@@ -284,6 +284,7 @@ async def test_initialize_uses_real_astrbot_api_and_restores_state(plugin):
     assert plugin.client._session is not None
     assert plugin.renderer.card_width == 1120
     assert plugin.renderer.font_scale_percent == 125
+    assert plugin.renderer.title_scale_percent == 80
 
 
 def test_chinese_subcommand_aliases_are_registered(module):
@@ -454,6 +455,8 @@ def test_invalid_weekend_reminder_settings_rejected(module, settings):
         ({"image_card_width": 1601}, "image_card_width"),
         ({"image_font_scale_percent": 99}, "image_font_scale_percent"),
         ({"image_font_scale_percent": True}, "image_font_scale_percent"),
+        ({"image_title_font_scale_percent": 59}, "image_title_font_scale_percent"),
+        ({"image_title_font_scale_percent": 121}, "image_title_font_scale_percent"),
         ({"standings_driver_limit": 0}, "standings_driver_limit"),
         ({"standings_team_limit": 21}, "standings_team_limit"),
     ],

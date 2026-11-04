@@ -128,6 +128,28 @@ def test_renderer_uses_personal_defaults(tmp_path: Path) -> None:
     renderer = ImageRenderer(tmp_path)
     assert renderer.card_width == 1120
     assert renderer.font_scale_percent == 125
+    assert renderer.title_scale_percent == 80
+
+
+def test_title_scale_only_changes_title_font_size(tmp_path: Path) -> None:
+    small = ImageRenderer(tmp_path, title_scale_percent=60)
+    default = ImageRenderer(tmp_path, title_scale_percent=80)
+    large = ImageRenderer(tmp_path, title_scale_percent=120)
+
+    assert small._title_font_size(44) < default._title_font_size(44)
+    assert default._title_font_size(44) < large._title_font_size(44)
+    assert small._font_size(18) == default._font_size(18) == large._font_size(18)
+    table = Table(title="标题缓存")
+    assert (
+        len(
+            {
+                small._cache_path(table),
+                default._cache_path(table),
+                large._cache_path(table),
+            }
+        )
+        == 3
+    )
 
 
 async def test_renderer_honors_custom_width_and_caches_png(tmp_path: Path) -> None:

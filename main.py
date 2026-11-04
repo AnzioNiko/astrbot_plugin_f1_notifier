@@ -94,6 +94,7 @@ class F1NotifierPlugin(Star):
         for key, default, minimum, maximum in (
             ("image_card_width", 1120, 1000, 1600),
             ("image_font_scale_percent", 125, 100, 140),
+            ("image_title_font_scale_percent", 80, 60, 120),
             ("result_poll_delay", 5, 0, 120),
             ("image_cache_max_age", 30, 1, 1440),
             ("image_cache_max_count", 50, 1, 200),
@@ -125,6 +126,7 @@ class F1NotifierPlugin(Star):
             max_count=self.config["image_cache_max_count"],
             card_width=self.config["image_card_width"],
             font_scale_percent=self.config["image_font_scale_percent"],
+            title_scale_percent=self.config["image_title_font_scale_percent"],
         )
         try:
             await self.client.open()
