@@ -6,7 +6,7 @@ import asyncio
 import math
 import time
 import unicodedata
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -357,8 +357,42 @@ class F1Client:
                 pass
         return matched
 
-    async def driver_headshots(self) -> dict[str, str]:
+    async def driver_headshots(
+        self,
+        requested_names: tuple[str, ...] = (),
+    ) -> dict[str, str]:
         """Return normalized driver aliases mapped to OpenF1 headshot URLs."""
+        candidate_urls: dict[str, list[str]] = {}
+
+        def collect(rows: object, surname: str | None = None) -> None:
+            if not isinstance(rows, list):
+                return
+            surname_key = normalise_driver_key(surname) if surname else ""
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if (
+                    surname_key
+                    and normalise_driver_key(str(row.get("last_name") or ""))
+                    != surname_key
+                ):
+                    continue
+                url = str(row.get("headshot_url") or "").strip()
+                if not url:
+                    continue
+                for candidate in (
+                    row.get("name_acronym"),
+                    row.get("full_name"),
+                    row.get("broadcast_name"),
+                    row.get("first_name"),
+                    row.get("last_name"),
+                ):
+                    key = normalise_driver_key(
+                        str(candidate) if candidate is not None else None
+                    )
+                    if key:
+                        candidate_urls.setdefault(key, []).append(url)
+
         try:
             rows = await self._get(
                 self.openf1_base,
@@ -368,28 +402,41 @@ class F1Client:
             )
         except DataError:
             return {}
-        if not isinstance(rows, list):
-            return {}
-        lookup: dict[str, str] = {}
-        for row in rows:
-            if not isinstance(row, dict):
+        collect(rows)
+
+        surnames: set[str] = set()
+        provisional = {
+            key: Counter(urls).most_common(1)[0][0]
+            for key, urls in candidate_urls.items()
+        }
+        for name in requested_names:
+            parts = name.split()
+            if len(parts) < 2:
                 continue
-            url = str(row.get("headshot_url") or "").strip()
-            if not url:
-                continue
-            for candidate in (
-                row.get("name_acronym"),
-                row.get("full_name"),
-                row.get("broadcast_name"),
-                row.get("first_name"),
-                row.get("last_name"),
-            ):
-                key = normalise_driver_key(
-                    str(candidate) if candidate is not None else None
+            candidates = {
+                normalise_driver_key(name),
+                normalise_driver_key(parts[0] + parts[-1]),
+                normalise_driver_key(parts[-1]),
+            }
+            if candidates.isdisjoint(provisional):
+                surnames.add(parts[-1])
+
+        for surname in sorted(surnames):
+            try:
+                extra = await self._get(
+                    self.openf1_base,
+                    "/drivers",
+                    {"last_name": surname},
+                    ttl=86400,
                 )
-                if key:
-                    lookup[key] = url
-        return lookup
+            except DataError:
+                continue
+            collect(extra, surname=surname)
+
+        return {
+            key: Counter(urls).most_common(1)[0][0]
+            for key, urls in candidate_urls.items()
+        }
 
     async def results(self, race: Race, kind: str) -> Table | None:
         """Read results for an exact season, round, and session.

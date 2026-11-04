@@ -668,3 +668,27 @@ async def test_driver_headshots_match_normalized_driver_names(client, monkeypatc
 
     assert lookup[api.normalise_driver_key("Max Verstappen")].endswith("/max.png")
     assert lookup[api.normalise_driver_key("VER")].endswith("/max.png")
+
+
+async def test_driver_headshots_surname_fallback_finds_middle_name_variant(
+    client, monkeypatch
+):
+    async def response(base, path, params=None, ttl=30):
+        assert path == "/drivers"
+        if params == {"session_key": "latest"}:
+            return []
+        if params == {"last_name": "Antonelli"}:
+            return [
+                {
+                    "full_name": "Kimi ANTONELLI",
+                    "last_name": "ANTONELLI",
+                    "headshot_url": "https://example.invalid/antonelli.png",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(client, "_get", response)
+    lookup = await client.driver_headshots(("Andrea Kimi Antonelli",))
+
+    assert lookup["antonelli"].endswith("/antonelli.png")
+    assert lookup["kimiantonelli"].endswith("/antonelli.png")

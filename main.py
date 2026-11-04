@@ -207,7 +207,12 @@ class F1NotifierPlugin(Star):
             current_avatars[index][driver_column] for index in range(len(table.rows))
         ):
             return table
-        lookup = await self.client.driver_headshots()
+        missing_names = tuple(
+            str(table.rows[index][driver_column])
+            for index in range(len(table.rows))
+            if not current_avatars[index][driver_column]
+        )
+        lookup = await self.client.driver_headshots(missing_names)
         if not lookup:
             return table
         changed = False
@@ -215,7 +220,15 @@ class F1NotifierPlugin(Star):
             if current_avatars[index][driver_column]:
                 continue
             name = row[driver_column] if driver_column < len(row) else ""
-            url = lookup.get(normalise_driver_key(str(name)))
+            parts = str(name).split()
+            candidates = [normalise_driver_key(str(name))]
+            if len(parts) > 1:
+                candidates.append(normalise_driver_key(parts[0] + parts[-1]))
+                candidates.append(normalise_driver_key(parts[-1]))
+            url = next(
+                (lookup[key] for key in candidates if key in lookup),
+                None,
+            )
             if url:
                 current_avatars[index][driver_column] = url
                 changed = True

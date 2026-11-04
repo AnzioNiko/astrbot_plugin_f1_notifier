@@ -303,6 +303,20 @@ async def test_image_table_attaches_driver_headshots(plugin):
     plugin.client.driver_headshots.assert_awaited_once()
 
 
+async def test_driver_headshots_use_surname_for_middle_name_variant(plugin):
+    url = "https://example.invalid/antonelli.png"
+    plugin.client.driver_headshots = AsyncMock(return_value={"antonelli": url})
+    table = Table(
+        "车手积分榜",
+        columns=("名次", "车手", "车队"),
+        rows=(("1", "Andrea Kimi Antonelli", "Mercedes"),),
+    )
+
+    enriched = await plugin._with_driver_headshots(table)
+
+    assert enriched.row_avatars == ((None, url, None),)
+
+
 async def test_schedule_table_does_not_request_driver_headshots(plugin):
     plugin.client.driver_headshots = AsyncMock()
     table = Table(
