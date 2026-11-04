@@ -301,15 +301,21 @@ def test_chinese_subcommand_aliases_are_registered(module):
     }
 
     assert "f1 积分榜" in command_names
+    assert "f1 正赛" in command_names
     assert "f1 正赛成绩" in command_names
     assert "f1 订阅" in command_names
 
 
 def test_help_menu_uses_chinese_as_default_with_english_in_parentheses(module):
     assert "/f1 帮助（help）" in module.HELP_TEXT
+    assert "/f1 正赛（result）" in module.HELP_TEXT
+    assert "/f1 排位（qualifying）" in module.HELP_TEXT
+    assert "/f1 冲刺（sprint）" in module.HELP_TEXT
+    assert "/f1 练习（practice）" in module.HELP_TEXT
     assert "/f1 积分榜（standings）" in module.HELP_TEXT
     assert "/f1 订阅列表（subs）" in module.HELP_TEXT
     assert "/f1 help（帮助）" not in module.HELP_TEXT
+    assert "/f1 正赛成绩（result）" not in module.HELP_TEXT
 
 
 async def test_invalid_round_does_not_call_provider(plugin):

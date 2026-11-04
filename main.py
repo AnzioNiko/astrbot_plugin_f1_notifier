@@ -24,10 +24,10 @@ HELP_TEXT = """F1 Notifier
 /f1 帮助（help）— 显示帮助
 /f1 赛程（schedule）— 未来 5 站赛程
 /f1 下一站（next）— 下一站完整周末时间表
-/f1 正赛成绩（result）[round] — 正赛结果，默认最近一站
-/f1 排位成绩（qualifying）[round] — 排位赛结果
-/f1 冲刺成绩（sprint）[round] — 冲刺赛结果
-/f1 练习成绩（practice）[1|2|3] — 最近一次指定练习赛结果
+/f1 正赛（result）[round] — 正赛结果，默认最近一站
+/f1 排位（qualifying）[round] — 排位赛结果
+/f1 冲刺（sprint）[round] — 冲刺赛结果
+/f1 练习（practice）[1|2|3] — 最近一次指定练习赛结果
 /f1 积分榜（standings）[车手|车队] [数量] — 车手 / 车队积分榜
 /f1 订阅（subscribe）— 订阅当前会话
 /f1 取消订阅（unsubscribe）— 取消当前会话订阅
@@ -398,7 +398,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "next"):
             yield result
 
-    @f1.command("result", alias={"正赛成绩"})
+    @f1.command("result", alias={"正赛", "正赛成绩"})
     async def f1_result(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show race classification.
 
@@ -412,7 +412,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "race", round_num):
             yield result
 
-    @f1.command("qualifying", alias={"排位成绩"})
+    @f1.command("qualifying", alias={"排位", "排位成绩"})
     async def f1_qualifying(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show qualifying classification.
 
@@ -426,7 +426,7 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "qualifying", round_num):
             yield result
 
-    @f1.command("sprint", alias={"冲刺成绩"})
+    @f1.command("sprint", alias={"冲刺", "冲刺成绩"})
     async def f1_sprint(self, event: AstrMessageEvent, round_num: str = "last"):
         """Show sprint classification.
 
@@ -440,7 +440,10 @@ class F1NotifierPlugin(Star):
         async for result in self._reply(event, "sprint", round_num):
             yield result
 
-    @f1.command("practice", alias={"练习成绩", "练习赛", "练习赛成绩"})
+    @f1.command(
+        "practice",
+        alias={"练习", "练习成绩", "练习赛", "练习赛成绩"},
+    )
     async def f1_practice(self, event: AstrMessageEvent, session: str = "1"):
         """Show the latest selected practice classification.
 
@@ -539,12 +542,16 @@ class F1NotifierPlugin(Star):
             "赛程": "schedule",
             "result": "race",
             "正赛成绩": "race",
+            "正赛": "race",
             "qualifying": "qualifying",
             "排位成绩": "qualifying",
+            "排位": "qualifying",
             "sprint": "sprint",
             "冲刺成绩": "sprint",
+            "冲刺": "sprint",
             "practice": "practice",
             "练习成绩": "practice",
+            "练习": "practice",
             "练习赛": "practice",
             "练习赛成绩": "practice",
             "standings": "standings",
